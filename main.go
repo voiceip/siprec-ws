@@ -102,6 +102,7 @@ func main() {
 
 	pool := NewWSForwarderPool(cfg.BotWSURL, logger)
 	handler.STTCallback = pool.ForwardAudio
+	handler.SessionMetadataCallback = pool.StoreStreamMeta
 	logger.WithField("bot_ws_url", cfg.BotWSURL).Info("STTCallback replaced with WebSocket forwarder")
 
 	handler.SetupHandlers()

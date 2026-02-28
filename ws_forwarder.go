@@ -17,14 +17,21 @@ import (
 
 // --- WebSocket protocol types ---
 
+// Participant describes one channel in the interleaved stereo stream.
+type Participant struct {
+	Index int    `json:"index"`
+	Label string `json:"label"`
+}
+
 // StartEvent is sent as a text frame when a new call begins.
 // Channels is 2 for interleaved stereo (L=caller/leg0, R=callee/leg1).
 type StartEvent struct {
-	Event      string `json:"event"`
-	CallID     string `json:"callId"`
-	SampleRate int    `json:"sampleRate"`
-	Encoding   string `json:"encoding"`
-	Channels   int    `json:"channels"`
+	Event        string        `json:"event"`
+	CallID       string        `json:"callId"`
+	SampleRate   int           `json:"sampleRate"`
+	Encoding     string        `json:"encoding"`
+	Channels     int           `json:"channels"`
+	Participants []Participant `json:"participants,omitempty"`
 }
 
 // StopEvent is sent as a text frame when a call ends.
@@ -97,8 +104,8 @@ func (cc *CallConnection) close() {
 
 const (
 	// 20ms at 8kHz 16-bit mono = 320 samples = 640 bytes per leg
-	pcmChunkSize    = 640
-	interleaveWait  = 10 * time.Millisecond
+	pcmChunkSize     = 640
+	interleaveWait   = 10 * time.Millisecond
 	singleLegTimeout = 100 * time.Millisecond // exit when one leg closed and no data from other
 )
 
@@ -250,9 +257,10 @@ type callState struct {
 // WSForwarderPool manages WebSocket connections to the voice-bot, keyed by
 // base call ID (i.e. without the _legN suffix).
 type WSForwarderPool struct {
-	botURL string
-	conns  sync.Map // map[string]*callState
-	logger *logrus.Logger
+	botURL     string
+	conns      sync.Map // map[string]*callState
+	streamMeta sync.Map // map[streamCallUUID]map[string]string – SIP participant metadata per leg
+	logger     *logrus.Logger
 }
 
 // NewWSForwarderPool creates a pool that dials the given bot WebSocket URL.
@@ -261,6 +269,38 @@ func NewWSForwarderPool(botURL string, logger *logrus.Logger) *WSForwarderPool {
 		botURL: botURL,
 		logger: logger,
 	}
+}
+
+// StoreStreamMeta implements the SessionMetadataCallback signature. It is
+// called by the SIPREC handler for each audio stream before ForwardAudio runs,
+// storing participant metadata (name, role, AOR) extracted from the SIPREC XML.
+func (p *WSForwarderPool) StoreStreamMeta(callUUID string, meta map[string]string) {
+	p.streamMeta.Store(callUUID, meta)
+	p.logger.WithFields(logrus.Fields{
+		"call_uuid": callUUID,
+		"meta":      meta,
+	}).Debug("Stored stream metadata")
+}
+
+// buildParticipants constructs the participants array for the start event by
+// looking up stored SIPREC metadata for each leg.
+func (p *WSForwarderPool) buildParticipants(baseCallID string) []Participant {
+	participants := make([]Participant, 2)
+	for i := 0; i < 2; i++ {
+		streamKey := fmt.Sprintf("%s_leg%d", baseCallID, i)
+		label := fmt.Sprintf("channel%d", i)
+
+		if v, ok := p.streamMeta.Load(streamKey); ok {
+			meta := v.(map[string]string)
+			if name := meta["participant_name"]; name != "" {
+				label = name
+			} else if aor := meta["participant_aor"]; aor != "" {
+				label = aor
+			}
+		}
+		participants[i] = Participant{Index: i, Label: label}
+	}
+	return participants
 }
 
 // getOrCreateConn returns the shared callState for a call, creating the
@@ -303,9 +343,11 @@ func (p *WSForwarderPool) getOrCreateConn(baseCallID string) (*callState, error)
 	return state, nil
 }
 
-// removeConn removes a connection from the pool.
+// removeConn removes a connection and its associated metadata from the pool.
 func (p *WSForwarderPool) removeConn(baseCallID string) {
 	p.conns.Delete(baseCallID)
+	p.streamMeta.Delete(fmt.Sprintf("%s_leg0", baseCallID))
+	p.streamMeta.Delete(fmt.Sprintf("%s_leg1", baseCallID))
 	DecBridgeActiveWSConnections()
 }
 
@@ -373,11 +415,12 @@ func (p *WSForwarderPool) ForwardAudio(ctx context.Context, _ string, reader io.
 	if newCount == 1 {
 		AddBridgeCallsTotal()
 		startEvt := StartEvent{
-			Event:      "start",
-			CallID:     baseCallID,
-			SampleRate: 8000,
-			Encoding:   "pcm16le",
-			Channels:   2,
+			Event:        "start",
+			CallID:       baseCallID,
+			SampleRate:   8000,
+			Encoding:     "pcm_s16le",
+			Channels:     2,
+			Participants: p.buildParticipants(baseCallID),
 		}
 		startJSON, _ := json.Marshal(startEvt)
 		if err := state.cc.writeText(startJSON); err != nil {
