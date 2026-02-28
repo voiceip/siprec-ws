@@ -1,0 +1,20 @@
+[Unit]
+Description=SIPREC WebSocket bridge
+After=network.target
+
+[Service]
+Type=simple
+User=voicebot
+Group=voicebot
+WorkingDirectory=/var/lib/siprec-ws-bridge
+EnvironmentFile=/etc/siprec-ws-bridge/siprec-ws-bridge.env
+ExecStart=/usr/local/bin/siprec-ws-bridge
+Restart=on-failure
+RestartSec=5
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

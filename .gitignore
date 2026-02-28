@@ -1,0 +1,5 @@
+*.pcap
+.idea/
+siprec-ws-bridge
+*.deb
+bin/

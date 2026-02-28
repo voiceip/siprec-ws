@@ -1,0 +1,5 @@
+# Remove recording files older than 6h. Requires tmpreaper (apt install tmpreaper).
+# Optional: set CLEANUP_ENABLED=false in siprec-ws-bridge.env to use only this cron.
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+0 */6 * * * root tmpreaper --mtime 6h /var/lib/siprec-ws-bridge/recordings 2>/dev/null || true
