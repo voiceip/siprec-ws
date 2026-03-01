@@ -1,4 +1,4 @@
-module github.fkinternal.com/Flipkart/siprec-ws-bridge.git
+module github.com/voiceip/siprec-ws.git
 
 go 1.24.0
 
