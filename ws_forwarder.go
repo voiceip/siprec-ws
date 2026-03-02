@@ -14,6 +14,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/singleflight"
 )
 
 // --- WebSocket protocol types ---
@@ -352,6 +353,7 @@ type WSForwarderPool struct {
 	botURL     string
 	conns      sync.Map // map[string]*callState
 	streamMeta sync.Map // map[streamCallUUID]map[string]string – SIP participant metadata per leg
+	sf         singleflight.Group
 	logger     *logrus.Logger
 }
 
@@ -473,43 +475,53 @@ func (p *WSForwarderPool) collectSIPMetadata(baseCallID string) map[string]strin
 }
 
 // getOrCreateConn returns the shared callState for a call, creating the
-// connection and interleaver if they don't exist yet.
+// connection and interleaver if they don't exist yet. Concurrent calls for
+// the same baseCallID (e.g. leg0 and leg1) are coalesced so only one WebSocket
+// is opened.
 func (p *WSForwarderPool) getOrCreateConn(baseCallID string) (*callState, error) {
 	if v, ok := p.conns.Load(baseCallID); ok {
 		return v.(*callState), nil
 	}
 
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-	}
-	conn, _, err := dialer.Dial(p.botURL, nil)
+	v, err, _ := p.sf.Do(baseCallID, func() (interface{}, error) {
+		// Re-check after acquiring singleflight; another goroutine may have stored.
+		if v, ok := p.conns.Load(baseCallID); ok {
+			return v.(*callState), nil
+		}
+
+		dialer := websocket.Dialer{
+			HandshakeTimeout: 10 * time.Second,
+		}
+		conn, _, err := dialer.Dial(p.botURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to dial bot at %s: %w", p.botURL, err)
+		}
+
+		cc := &CallConnection{
+			conn:   conn,
+			callID: baseCallID,
+			logger: p.logger.WithField("call_id", baseCallID),
+		}
+
+		ai := &AudioInterleaver{
+			cc:     cc,
+			leg0Ch: make(chan []byte, 8),
+			leg1Ch: make(chan []byte, 8),
+			logger: p.logger.WithField("call_id", baseCallID),
+		}
+
+		state := &callState{cc: cc, ai: ai, startTime: time.Now()}
+		p.conns.Store(baseCallID, state)
+
+		p.logger.WithFields(logrus.Fields{"call_id": baseCallID, "bot_url": p.botURL}).Info("WebSocket connection established to bot")
+		IncBridgeActiveWSConnections()
+		return state, nil
+	})
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to dial bot at %s: %w", p.botURL, err)
+		return nil, err
 	}
-
-	cc := &CallConnection{
-		conn:   conn,
-		callID: baseCallID,
-		logger: p.logger.WithField("call_id", baseCallID),
-	}
-
-	ai := &AudioInterleaver{
-		cc:     cc,
-		leg0Ch: make(chan []byte, 8),
-		leg1Ch: make(chan []byte, 8),
-		logger: p.logger.WithField("call_id", baseCallID),
-	}
-
-	state := &callState{cc: cc, ai: ai, startTime: time.Now()}
-	actual, loaded := p.conns.LoadOrStore(baseCallID, state)
-	if loaded {
-		_ = conn.Close()
-		return actual.(*callState), nil
-	}
-
-	p.logger.WithFields(logrus.Fields{"call_id": baseCallID, "bot_url": p.botURL}).Info("WebSocket connection established to bot")
-	IncBridgeActiveWSConnections()
-	return state, nil
+	return v.(*callState), nil
 }
 
 // removeConn removes a connection and its associated metadata from the pool.
