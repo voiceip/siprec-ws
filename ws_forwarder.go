@@ -34,6 +34,7 @@ type StartEvent struct {
 	Encoding     string            `json:"encoding"`
 	Channels     int               `json:"channels"`
 	UCID         string            `json:"ucid,omitempty"`
+	UUI          string            `json:"uui,omitempty"`
 	Participants []Participant     `json:"participants,omitempty"`
 	SIPMetadata  map[string]string `json:"sipMetadata,omitempty"`
 }
@@ -110,6 +111,50 @@ func hexToUint(h string) (uint64, error) {
 		v = v<<8 | uint64(c)
 	}
 	return v, nil
+}
+
+// extractCustomPayloadFromUUI decodes the custom ASCII payload injected into the UUI string.
+// It looks for the C8 marker, reads the length byte, and hex-decodes the payload.
+func extractCustomPayloadFromUUI(uui string) string {
+	upper := strings.ToUpper(uui)
+
+	// Clean the string if it has encoding parameters (e.g., ";encoding=hex")
+	if idx := strings.Index(upper, ";"); idx >= 0 {
+		upper = upper[:idx]
+	}
+
+	// Find the start of our custom payload marker (C8)
+	// We include the 04 discriminator to be safe: "04C8"
+	idx := strings.Index(upper, "04C8")
+	if idx < 0 || idx+6 > len(upper) {
+		return ""
+	}
+
+	// Decode payload length (1 byte = 2 hex chars directly after "04C8")
+	lenHex := upper[idx+4 : idx+6]
+	lenBytes, err := hex.DecodeString(lenHex)
+	if err != nil || len(lenBytes) == 0 {
+		return ""
+	}
+	payloadLen := int(lenBytes[0]) // Length in bytes
+
+	// Calculate payload bounds
+	payloadStart := idx + 6
+	payloadEnd := payloadStart + (payloadLen * 2) // 2 hex chars per byte
+
+	// Boundary check to prevent panics on malformed strings
+	if payloadEnd > len(upper) {
+		return ""
+	}
+
+	// Extract the hex payload and decode it back to an ASCII string
+	hexPayload := upper[payloadStart:payloadEnd]
+	decodedBytes, err := hex.DecodeString(hexPayload)
+	if err != nil {
+		return ""
+	}
+
+	return string(decodedBytes)
 }
 
 // cleanSIPURI strips angle brackets and the sip:/sips: scheme from a SIP URI,
@@ -452,6 +497,21 @@ func (p *WSForwarderPool) lookupUCID(baseCallID string) string {
 	return ""
 }
 
+// lookupCustomData extracts the custom ASCII payload from the SIP user-to-user metadata.
+func (p *WSForwarderPool) lookupUUI(baseCallID string) string {
+	meta := p.getSessionMeta(baseCallID)
+	if meta == nil {
+		return ""
+	}
+
+	// sip_uui holds the raw hex string
+	if uui := meta["sip_uui"]; uui != "" {
+		return extractCustomPayloadFromUUI(uui)
+	}
+
+	return ""
+}
+
 // collectSIPMetadata builds a filtered map of SIP headers / session metadata
 // to forward in the start event. Only keys with the "sip_" prefix are included.
 func (p *WSForwarderPool) collectSIPMetadata(baseCallID string) map[string]string {
@@ -606,6 +666,7 @@ func (p *WSForwarderPool) ForwardAudio(ctx context.Context, _ string, reader io.
 		log.Info("First leg for this call; sending start event to bot")
 		AddBridgeCallsTotal()
 		ucid := p.lookupUCID(baseCallID)
+		uui := p.lookupUUI(baseCallID)
 		startEvt := StartEvent{
 			Event:        "start",
 			CallID:       baseCallID,
@@ -613,6 +674,7 @@ func (p *WSForwarderPool) ForwardAudio(ctx context.Context, _ string, reader io.
 			Encoding:     "pcm_s16le",
 			Channels:     2,
 			UCID:         ucid,
+			UUI:          uui,
 			Participants: p.buildParticipants(baseCallID),
 			SIPMetadata:  p.collectSIPMetadata(baseCallID),
 		}
