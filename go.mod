@@ -9,10 +9,12 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/prometheus/client_golang v1.22.0
 	github.com/sirupsen/logrus v1.9.4
-	siprec-server v0.0.0-20260227131117-ecbf26f4567f
+	siprec-server v0.0.0-20260301042503-8429f9b39b2f
 )
 
-replace siprec-server => github.com/voiceip/siprec v0.0.0-20260227131117-ecbf26f4567f
+replace siprec-server => github.com/voiceip/siprec v0.0.0-20260301042503-8429f9b39b2f
+
+// replace siprec-server => ../../siprec
 
 require (
 	cloud.google.com/go v0.115.1 // indirect

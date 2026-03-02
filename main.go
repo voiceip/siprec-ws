@@ -26,9 +26,13 @@ import (
 	"siprec-server/pkg/sip"
 )
 
+var Version = "0.1.0"
+
 func main() {
 	// Load environment (systemd uses EnvironmentFile; godotenv is best-effort for local .env).
 	_ = godotenv.Load()
+
+	logrus.Infof("Starting siprec-ws-bridge version %s", Version)
 
 	cfg, err := LoadConfig()
 	if err != nil {

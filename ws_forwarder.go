@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,18 +27,109 @@ type Participant struct {
 // StartEvent is sent as a text frame when a new call begins.
 // Channels is 2 for interleaved stereo (L=caller/leg0, R=callee/leg1).
 type StartEvent struct {
-	Event        string        `json:"event"`
-	CallID       string        `json:"callId"`
-	SampleRate   int           `json:"sampleRate"`
-	Encoding     string        `json:"encoding"`
-	Channels     int           `json:"channels"`
-	Participants []Participant `json:"participants,omitempty"`
+	Event        string            `json:"event"`
+	CallID       string            `json:"callId"`
+	SampleRate   int               `json:"sampleRate"`
+	Encoding     string            `json:"encoding"`
+	Channels     int               `json:"channels"`
+	UCID         string            `json:"ucid,omitempty"`
+	Participants []Participant     `json:"participants,omitempty"`
+	SIPMetadata  map[string]string `json:"sipMetadata,omitempty"`
 }
 
 // StopEvent is sent as a text frame when a call ends.
 type StopEvent struct {
 	Event  string `json:"event"`
 	CallID string `json:"callId"`
+}
+
+// --- UCID extraction from Avaya SIPREC session_id ---
+
+// extractUCIDFromSessionID decodes an Avaya UCID from the SIPREC session_id.
+//
+// The session_id is a hex string that embeds a UUI payload at the end with the
+// structure:  ...FA {len} {NN 2B} {CC 2B} {TT 4B}
+//
+//   - FA   = marker byte
+//   - len  = payload length in bytes (expected 08 for a standard UCID)
+//   - NN   = network/node ID  (2 bytes → 5-digit decimal)
+//   - CC   = cluster ID       (2 bytes → 5-digit decimal)
+//   - TT   = timestamp/seq    (4 bytes → 10-digit decimal)
+//
+// The 20-digit UCID is NN + CC + TT zero-padded and concatenated.
+// Returns "" if the session_id does not contain a valid Avaya UCID.
+func extractUCIDFromSessionID(sessionID string) string {
+	upper := strings.ToUpper(sessionID)
+
+	// Scan backwards for the FA marker to avoid false positives in the UUID portion.
+	idx := strings.LastIndex(upper, "FA")
+	if idx < 0 || idx+4 > len(upper) {
+		return ""
+	}
+
+	// Decode payload length (1 byte = 2 hex chars after "FA").
+	lenHex := upper[idx+2 : idx+4]
+	lenBytes, err := hex.DecodeString(lenHex)
+	if err != nil || len(lenBytes) == 0 {
+		return ""
+	}
+	payloadLen := int(lenBytes[0]) // in bytes
+
+	payloadStart := idx + 4
+	payloadEnd := payloadStart + payloadLen*2 // 2 hex chars per byte
+	if payloadEnd > len(upper) || payloadLen < 8 {
+		return ""
+	}
+
+	payload := upper[payloadStart:payloadEnd]
+
+	nn, err := hexToUint(payload[0:4])
+	if err != nil {
+		return ""
+	}
+	cc, err := hexToUint(payload[4:8])
+	if err != nil {
+		return ""
+	}
+	tt, err := hexToUint(payload[8:16])
+	if err != nil {
+		return ""
+	}
+
+	return fmt.Sprintf("%05d%05d%010d", nn, cc, tt)
+}
+
+func hexToUint(h string) (uint64, error) {
+	b, err := hex.DecodeString(h)
+	if err != nil {
+		return 0, err
+	}
+	var v uint64
+	for _, c := range b {
+		v = v<<8 | uint64(c)
+	}
+	return v, nil
+}
+
+// cleanSIPURI strips angle brackets and the sip:/sips: scheme from a SIP URI,
+// returning e.g. "user@host" from "<sip:user@host>".
+func cleanSIPURI(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, "<>")
+	s = strings.TrimPrefix(s, "sip:")
+	s = strings.TrimPrefix(s, "sips:")
+	return s
+}
+
+// cleanSIPMetaValue normalises a SIP metadata value by trimming whitespace,
+// stripping angle brackets, and removing encoding parameters (";encoding=hex").
+func cleanSIPMetaValue(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, "<>")
+	if idx := strings.Index(s, ";encoding="); idx >= 0 {
+		s = s[:idx]
+	}
+	return s
 }
 
 // --- Per-call WebSocket connection ---
@@ -282,25 +374,102 @@ func (p *WSForwarderPool) StoreStreamMeta(callUUID string, meta map[string]strin
 	}).Debug("Stored stream metadata")
 }
 
+// streamMetaKey returns possible keys for a leg's metadata (handler may use _leg0 or _10/_20).
+func streamMetaKeys(baseCallID string, legIndex int) []string {
+	suffixes := []string{fmt.Sprintf("leg%d", legIndex)}
+	if legIndex == 0 {
+		suffixes = append(suffixes, "10")
+	} else if legIndex == 1 {
+		suffixes = append(suffixes, "20")
+	}
+	keys := make([]string, 0, len(suffixes))
+	for _, s := range suffixes {
+		keys = append(keys, fmt.Sprintf("%s_%s", baseCallID, s))
+	}
+	return keys
+}
+
 // buildParticipants constructs the participants array for the start event by
 // looking up stored SIPREC metadata for each leg.
 func (p *WSForwarderPool) buildParticipants(baseCallID string) []Participant {
 	participants := make([]Participant, 2)
 	for i := 0; i < 2; i++ {
-		streamKey := fmt.Sprintf("%s_leg%d", baseCallID, i)
 		label := fmt.Sprintf("channel%d", i)
-
-		if v, ok := p.streamMeta.Load(streamKey); ok {
-			meta := v.(map[string]string)
-			if name := meta["participant_name"]; name != "" {
-				label = name
-			} else if aor := meta["participant_aor"]; aor != "" {
-				label = aor
+		for _, streamKey := range streamMetaKeys(baseCallID, i) {
+			if v, ok := p.streamMeta.Load(streamKey); ok {
+				meta := v.(map[string]string)
+				if name := meta["participant_name"]; name != "" {
+					label = cleanSIPURI(name)
+				} else if aor := meta["participant_aor"]; aor != "" {
+					label = cleanSIPURI(aor)
+				}
+				break
 			}
 		}
 		participants[i] = Participant{Index: i, Label: label}
 	}
 	return participants
+}
+
+// getSessionMeta returns the first available stream metadata for a call.
+// Session-level fields (session_id, sip_uui, etc.) are identical across legs.
+func (p *WSForwarderPool) getSessionMeta(baseCallID string) map[string]string {
+	for i := 0; i < 2; i++ {
+		for _, streamKey := range streamMetaKeys(baseCallID, i) {
+			if v, ok := p.streamMeta.Load(streamKey); ok {
+				return v.(map[string]string)
+			}
+		}
+	}
+	return nil
+}
+
+// lookupUCID extracts the Avaya UCID from SIP metadata. It tries the
+// User-to-User header first (sip_uui), then falls back to the SIPREC
+// session_id — both carry the same hex-encoded payload.
+func (p *WSForwarderPool) lookupUCID(baseCallID string) string {
+	meta := p.getSessionMeta(baseCallID)
+	if meta == nil {
+		return ""
+	}
+
+	// sip_uui has the raw UUI value, e.g. "...FA082713D65569A124C4;encoding=hex"
+	if uui := meta["sip_uui"]; uui != "" {
+		raw := strings.SplitN(uui, ";", 2)[0]
+		if ucid := extractUCIDFromSessionID(raw); ucid != "" {
+			return ucid
+		}
+	}
+
+	if sid := meta["session_id"]; sid != "" {
+		if ucid := extractUCIDFromSessionID(sid); ucid != "" {
+			return ucid
+		}
+	}
+
+	return ""
+}
+
+// collectSIPMetadata builds a filtered map of SIP headers / session metadata
+// to forward in the start event. Only keys with the "sip_" prefix are included.
+func (p *WSForwarderPool) collectSIPMetadata(baseCallID string) map[string]string {
+	meta := p.getSessionMeta(baseCallID)
+	if meta == nil {
+		return nil
+	}
+	out := make(map[string]string)
+	for k, v := range meta {
+		if strings.HasPrefix(k, "sip_") && v != "" {
+			out[k] = cleanSIPMetaValue(v)
+		}
+	}
+	if sid := meta["session_id"]; sid != "" {
+		out["session_id"] = strings.TrimSpace(sid)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // getOrCreateConn returns the shared callState for a call, creating the
@@ -346,8 +515,9 @@ func (p *WSForwarderPool) getOrCreateConn(baseCallID string) (*callState, error)
 // removeConn removes a connection and its associated metadata from the pool.
 func (p *WSForwarderPool) removeConn(baseCallID string) {
 	p.conns.Delete(baseCallID)
-	p.streamMeta.Delete(fmt.Sprintf("%s_leg0", baseCallID))
-	p.streamMeta.Delete(fmt.Sprintf("%s_leg1", baseCallID))
+	for _, key := range []string{"_leg0", "_leg1", "_10", "_20"} {
+		p.streamMeta.Delete(baseCallID + key)
+	}
 	DecBridgeActiveWSConnections()
 }
 
@@ -376,7 +546,9 @@ func (p *WSForwarderPool) ActiveCalls() []ActiveCallInfo {
 	return out
 }
 
-// parseCallUUID splits "callID_leg0" into ("callID", 0).
+// parseCallUUID splits "callID_leg0" or "callID_10"/"callID_20" into (baseCallID, legIndex).
+// SIPREC may use numeric suffixes (_10, _20) for legs; we treat them as one call and
+// map to leg indices 0 and 1 so both legs share the same connection and only one start event is sent.
 func parseCallUUID(callUUID string) (baseCallID string, legIndex int) {
 	lastUnderscore := strings.LastIndex(callUUID, "_")
 	if lastUnderscore < 0 {
@@ -390,7 +562,17 @@ func parseCallUUID(callUUID string) (baseCallID string, legIndex int) {
 			return base, idx
 		}
 	}
-	return callUUID, 0
+	// Numeric suffix (e.g. _10, _20 from SIPREC): use base so both legs share state; map 10->0, 20->1.
+	var num int
+	if _, err := fmt.Sscanf(suffix, "%d", &num); err == nil {
+		if num == 10 {
+			return base, 0
+		}
+		if num == 20 {
+			return base, 1
+		}
+	}
+	return base, 0
 }
 
 // ForwardAudio implements the STTCallback signature. It is called once per
@@ -413,16 +595,24 @@ func (p *WSForwarderPool) ForwardAudio(ctx context.Context, _ string, reader io.
 	log.WithField("active_legs", newCount).Info("Audio leg started")
 
 	if newCount == 1 {
+		log.Info("First leg for this call; sending start event to bot")
 		AddBridgeCallsTotal()
+		ucid := p.lookupUCID(baseCallID)
 		startEvt := StartEvent{
 			Event:        "start",
 			CallID:       baseCallID,
 			SampleRate:   8000,
 			Encoding:     "pcm_s16le",
 			Channels:     2,
+			UCID:         ucid,
 			Participants: p.buildParticipants(baseCallID),
+			SIPMetadata:  p.collectSIPMetadata(baseCallID),
 		}
 		startJSON, _ := json.Marshal(startEvt)
+		if ucid != "" {
+			log.WithField("ucid", ucid).Info("Extracted UCID from SIPREC session")
+		}
+		log.WithField("start_event", string(startJSON)).Info("Sending start event to bot")
 		if err := state.cc.writeText(startJSON); err != nil {
 			log.WithError(err).Error("Failed to send start event")
 		}

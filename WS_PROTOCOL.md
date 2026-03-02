@@ -32,10 +32,16 @@ Sent **once** at the beginning of a session, before any binary frames.
   "sampleRate": 16000,
   "channels": 2,
   "encoding": "pcm_s16le",
+  "ucid": "10003548691772168388",
   "participants": [
     { "index": 0, "label": "customer" },
     { "index": 1, "label": "agent" }
-  ]
+  ],
+  "sipMetadata": {
+    "session_id": "04C828...A124C4",
+    "sip_uui": "04C828...A124C4",
+    "sip_vendor_type": "avaya"
+  }
 }
 ```
 
@@ -46,7 +52,21 @@ Sent **once** at the beginning of a session, before any binary frames.
 | `sampleRate`  | int    | yes      | Sample rate in Hz (e.g. `8000`, `16000`).                   |
 | `channels`    | int    | yes      | Number of audio channels. Must be `2` (stereo).             |
 | `encoding`    | string | yes      | Audio encoding. Must be `"pcm_s16le"` (signed 16-bit LE).  |
+| `ucid`        | string | no       | Avaya Universal Call ID (20-digit decimal), decoded from UUI/session\_id. |
 | `participants`| array  | no       | Optional metadata about each channel.                       |
+| `sipMetadata` | object | no       | SIP headers and SIPREC session metadata (keys prefixed `sip_`). See table below. |
+
+**Common `sipMetadata` keys** (presence depends on the PBX vendor):
+
+| Key                         | Description                                |
+|-----------------------------|--------------------------------------------|
+| `session_id`                | SIPREC recording session ID (hex string).  |
+| `sip_uui`                   | Raw User-to-User header (RFC 7433).        |
+| `sip_vendor_type`           | Detected PBX vendor (e.g. `avaya`).        |
+| `sip_ucid`                  | Generic UCID from SIP headers.             |
+| `sip_avaya_ucid`            | Avaya-specific UCID header.                |
+| `sip_avaya_vdn`             | Avaya Vector Directory Number.             |
+| `sip_avaya_agent_id`        | Avaya agent identifier.                    |
 
 #### `stop`
 
