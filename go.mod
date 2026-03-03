@@ -10,10 +10,10 @@ require (
 	github.com/prometheus/client_golang v1.22.0
 	github.com/sirupsen/logrus v1.9.4
 	golang.org/x/sync v0.19.0
-	siprec-server v0.0.0-20260301042503-8429f9b39b2f
+	siprec-server v0.0.0
 )
 
-replace siprec-server => github.com/voiceip/siprec v0.0.0-20260301042503-8429f9b39b2f
+replace siprec-server => github.com/voiceip/siprec v0.0.0-20260303100614-96eba471de90
 
 // replace siprec-server => ../../siprec
 
