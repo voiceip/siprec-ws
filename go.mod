@@ -13,7 +13,7 @@ require (
 	siprec-server v0.0.0
 )
 
-replace siprec-server => github.com/voiceip/siprec v0.0.0-20260303100614-96eba471de90
+replace siprec-server => github.com/voiceip/siprec v0.0.0-20260303121305-7c1dfe08f5bb
 
 // replace siprec-server => ../../siprec
 
