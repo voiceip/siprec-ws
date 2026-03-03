@@ -91,7 +91,10 @@ func main() {
 		ExternalIP:       cfg.ExternalIP,
 	}
 
-	redisStore, _ := session.NewRedisSessionStore(session.RedisConfig{
+	// Redis session store is used for recovery: the siprec handler only writes
+	// sessions to Redis during shutdown (CleanupActiveCalls). You will not see
+	// keys in Redis while calls are active; they appear when the process exits.
+	redisStore, err := session.NewRedisSessionStore(session.RedisConfig{
 		Address:      cfg.RedisAddress,
 		Password:     cfg.RedisPassword,
 		Database:     cfg.RedisDatabase,
@@ -101,6 +104,10 @@ func main() {
 		WriteTimeout: 3 * time.Second,
 		TTL:          24 * time.Hour,
 	}, logger)
+	if err != nil {
+		logger.WithError(err).Warn("Redis session store unavailable; sessions will not be persisted (in-memory only)")
+		redisStore = nil
+	}
 
 	sipConfig := &sip.Config{
 		MaxConcurrentCalls: cfg.MaxConcurrentCalls,

@@ -167,6 +167,17 @@ func cleanSIPURI(s string) string {
 	return s
 }
 
+// cleanSIPAddress cleans From/To-style SIP values for display: removes URI
+// parameters (e.g. ;tag=..., ;transport=tcp), angle brackets, and sip:/sips:
+// scheme, returning e.g. "user@host" or "09992006118@fkipl.flipkart.com".
+func cleanSIPAddress(s string) string {
+	s = strings.TrimSpace(s)
+	if idx := strings.Index(s, ";"); idx >= 0 {
+		s = s[:idx]
+	}
+	return cleanSIPURI(strings.TrimSpace(s))
+}
+
 // cleanSIPMetaValue normalises a SIP metadata value by trimming whitespace,
 // stripping angle brackets, and removing encoding parameters (";encoding=hex").
 func cleanSIPMetaValue(s string) string {
@@ -522,7 +533,12 @@ func (p *WSForwarderPool) collectSIPMetadata(baseCallID string) map[string]strin
 	out := make(map[string]string)
 	for k, v := range meta {
 		if strings.HasPrefix(k, "sip_") && v != "" {
-			out[k] = cleanSIPMetaValue(v)
+			switch k {
+			case "sip_from", "sip_to":
+				out[k] = cleanSIPAddress(v)
+			default:
+				out[k] = cleanSIPMetaValue(v)
+			}
 		}
 	}
 	if sid := meta["session_id"]; sid != "" {
