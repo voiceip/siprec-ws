@@ -107,6 +107,7 @@ func main() {
 		MediaConfig:        mediaConfig,
 		SIPPorts:           cfg.SIPPorts,
 		SessionStore:       redisStore,
+		SessionNodeID:      "recorder-1",
 		Recording: &sip.RecordingConfig{
 			Format: "wav",
 		},
