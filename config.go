@@ -26,6 +26,11 @@ type Config struct {
 	RTPTimeout         time.Duration
 	MaxConcurrentCalls int
 
+	// Redis
+	RedisAddress  string
+	RedisPassword string
+	RedisDatabase int
+
 	// Recording
 	RecordingDir string
 
@@ -65,6 +70,9 @@ func LoadConfig() (*Config, error) {
 		BehindNAT:          envBool("BEHIND_NAT", false),
 		HTTPPort:           envInt("HTTP_PORT", 8080),
 		MaxConcurrentCalls: envInt("MAX_CALLS", 500),
+		RedisAddress:       envStr("REDIS_ADDRESS", "localhost:6379"),
+		RedisPassword:      envStr("REDIS_PASSWORD", ""),
+		RedisDatabase:      envInt("REDIS_DATABASE", 0),
 	}
 
 	if cfg.BotWSURL == "" {

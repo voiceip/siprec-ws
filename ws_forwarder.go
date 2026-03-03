@@ -637,9 +637,16 @@ func parseCallUUID(callUUID string) (baseCallID string, legIndex int) {
 	// Numeric suffix (e.g. _10, _20 from SIPREC): use base so both legs share state; map 10->0, 20->1.
 	var num int
 	if _, err := fmt.Sscanf(suffix, "%d", &num); err == nil && num >= 10 {
-		return base, (num / 10) - 1
+		legIndex := (num / 10) - 1
+		if legIndex < 0 {
+			legIndex = 0
+		}
+		if legIndex > 1 {
+			legIndex = 1
+		}
+		return base, legIndex
 	}
-	// However we only support leg0 and leg1 for now, so default to leg0.
+	// Unknown suffix: treat as single leg (leg 0).
 	return base, 0
 }
 

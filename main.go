@@ -23,6 +23,7 @@ import (
 	"siprec-server/pkg/backup"
 	"siprec-server/pkg/media"
 	"siprec-server/pkg/metrics"
+	"siprec-server/pkg/session"
 	"siprec-server/pkg/sip"
 )
 
@@ -90,10 +91,22 @@ func main() {
 		ExternalIP:       cfg.ExternalIP,
 	}
 
+	redisStore, _ := session.NewRedisSessionStore(session.RedisConfig{
+		Address:      cfg.RedisAddress,
+		Password:     cfg.RedisPassword,
+		Database:     cfg.RedisDatabase,
+		PoolSize:     10,
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  3 * time.Second,
+		WriteTimeout: 3 * time.Second,
+		TTL:          24 * time.Hour,
+	}, logger)
+
 	sipConfig := &sip.Config{
 		MaxConcurrentCalls: cfg.MaxConcurrentCalls,
 		MediaConfig:        mediaConfig,
 		SIPPorts:           cfg.SIPPorts,
+		SessionStore:       redisStore,
 		Recording: &sip.RecordingConfig{
 			Format: "wav",
 		},

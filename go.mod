@@ -9,6 +9,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/prometheus/client_golang v1.22.0
 	github.com/sirupsen/logrus v1.9.4
+	golang.org/x/sync v0.19.0
 	siprec-server v0.0.0-20260301042503-8429f9b39b2f
 )
 
@@ -102,7 +103,6 @@ require (
 	golang.org/x/mod v0.31.0 // indirect
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/oauth2 v0.24.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
 	golang.org/x/time v0.6.0 // indirect
