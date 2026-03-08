@@ -36,6 +36,12 @@ func main() {
 		logrus.WithError(err).Fatal("Invalid config")
 	}
 
+	callFilters, err := LoadCallFilters()
+	if err != nil {
+		logrus.WithError(err).Fatal("Failed to load call allow filters from config file")
+	}
+	cfg.CallAllowFilters = callFilters
+
 	logger := logrus.New()
 	logger.SetFormatter(&logrus.JSONFormatter{})
 	if lvl, err := logrus.ParseLevel(cfg.LogLevel); err == nil {

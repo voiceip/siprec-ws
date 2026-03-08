@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -145,6 +148,52 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("http_port", 8080)
 	v.SetDefault("gcs.prefix", "recordings")
 	v.SetDefault("gcs.keep_local", true)
+}
+
+// LoadCallFilters reads call allow filters from a YAML config file.
+// The file path is taken from the CONFIG_FILE env var (default ./config.yaml).
+// Returns nil with no error if the file does not exist (filter disabled).
+func LoadCallFilters() ([]CallFilterRule, error) {
+	cfgFile := envStr("CONFIG_FILE", "./config.yaml")
+
+	v := viper.New()
+	v.SetConfigFile(cfgFile)
+
+	dir := filepath.Dir(cfgFile)
+	base := filepath.Base(cfgFile)
+	ext := filepath.Ext(base)
+	name := strings.TrimSuffix(base, ext)
+
+	v.SetConfigName(name)
+	v.SetConfigType(strings.TrimPrefix(ext, "."))
+	v.AddConfigPath(dir)
+
+	if err := v.ReadInConfig(); err != nil {
+		var notFound viper.ConfigFileNotFoundError
+		if errors.As(err, &notFound) {
+			return nil, nil
+		}
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading config file %s: %w", cfgFile, err)
+	}
+
+	var rules []CallFilterRule
+	if err := v.UnmarshalKey("call_allow_filters", &rules); err != nil {
+		return nil, fmt.Errorf("parsing call_allow_filters from %s: %w", cfgFile, err)
+	}
+
+	for i, r := range rules {
+		if r.Field == "" {
+			return nil, fmt.Errorf("call_allow_filters[%d]: field is required", i)
+		}
+		if _, err := regexp.Compile(r.Pattern); err != nil {
+			return nil, fmt.Errorf("call_allow_filters[%d]: invalid pattern %q: %w", i, r.Pattern, err)
+		}
+	}
+
+	return rules, nil
 }
 
 type configError struct{ msg string }
