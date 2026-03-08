@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -403,24 +404,46 @@ type callState struct {
 	startTime time.Time
 }
 
+// compiledFilter holds a pre-compiled allow filter rule.
+type compiledFilter struct {
+	field   string
+	pattern *regexp.Regexp
+}
+
+// CompileCallFilters pre-compiles filter rules into ready-to-match filters.
+func CompileCallFilters(rules []CallFilterRule) ([]compiledFilter, error) {
+	if len(rules) == 0 {
+		return nil, nil
+	}
+	out := make([]compiledFilter, len(rules))
+	for i, r := range rules {
+		re, err := regexp.Compile(r.Pattern)
+		if err != nil {
+			return nil, fmt.Errorf("filter[%d] field=%q: invalid pattern %q: %w", i, r.Field, r.Pattern, err)
+		}
+		out[i] = compiledFilter{field: r.Field, pattern: re}
+	}
+	return out, nil
+}
+
 // WSForwarderPool manages WebSocket connections to the voice-bot, keyed by
 // base call ID (i.e. without the _legN suffix).
 type WSForwarderPool struct {
-	botURL      string
-	conns       sync.Map // map[string]*callState
-	streamMeta  sync.Map // map[streamCallUUID]map[string]string – SIP participant metadata per leg
-	sf          singleflight.Group
-	logger      *logrus.Logger
-	allowedVDNs map[string]struct{} // nil means all VDNs allowed
+	botURL       string
+	conns        sync.Map // map[string]*callState
+	streamMeta   sync.Map // map[streamCallUUID]map[string]string – SIP participant metadata per leg
+	sf           singleflight.Group
+	logger       *logrus.Logger
+	allowFilters []compiledFilter // nil means all calls allowed
 }
 
 // NewWSForwarderPool creates a pool that dials the given bot WebSocket URL.
-// allowedVDNs restricts forwarding to the listed VDNs; nil or empty disables filtering.
-func NewWSForwarderPool(botURL string, logger *logrus.Logger, allowedVDNs map[string]struct{}) *WSForwarderPool {
+// filters restricts forwarding to calls matching all rules; nil disables filtering.
+func NewWSForwarderPool(botURL string, logger *logrus.Logger, filters []compiledFilter) *WSForwarderPool {
 	return &WSForwarderPool{
-		botURL:      botURL,
-		logger:      logger,
-		allowedVDNs: allowedVDNs,
+		botURL:       botURL,
+		logger:       logger,
+		allowFilters: filters,
 	}
 }
 
@@ -553,42 +576,41 @@ func (p *WSForwarderPool) collectSIPMetadata(baseCallID string) map[string]strin
 	return out
 }
 
-// extractVDN returns the VDN from sip_to if the user part is exactly 5 digits
-// (e.g. "61378" from "61378@172.25.12.196:5090").
-func (p *WSForwarderPool) extractVDN(baseCallID string) string {
-	meta := p.getSessionMeta(baseCallID)
-	if meta == nil {
-		return ""
-	}
-	sipTo := cleanSIPAddress(meta["sip_to"])
-	user := sipTo
-	if idx := strings.Index(sipTo, "@"); idx > 0 {
-		user = sipTo[:idx]
-	}
-	if len(user) != 5 {
-		return ""
-	}
-	for _, c := range user {
-		if c < '0' || c > '9' {
-			return ""
+// cleanMetaFieldValue applies the same cleaning as collectSIPMetadata for a
+// given metadata key so that filter patterns match against normalised values.
+func cleanMetaFieldValue(key, raw string) string {
+	switch key {
+	case "sip_from", "sip_to":
+		return cleanSIPAddress(raw)
+	case "session_id":
+		return strings.TrimSpace(raw)
+	default:
+		if strings.HasPrefix(key, "sip_") {
+			return cleanSIPMetaValue(raw)
 		}
+		return strings.TrimSpace(raw)
 	}
-	return user
 }
 
-// isVDNAllowed returns true if the call's VDN passes the whitelist check.
-// When allowedVDNs is nil or empty the filter is disabled and all VDNs pass.
-// Calls without a recognisable 5-digit VDN are always allowed through.
-func (p *WSForwarderPool) isVDNAllowed(baseCallID string) bool {
-	if len(p.allowedVDNs) == 0 {
-		return true
+// isCallAllowed checks whether a call's metadata passes all configured allow
+// filters. Returns true when no filters are configured (filter disabled).
+// Returns the first failing field name and pattern on rejection (for logging).
+func (p *WSForwarderPool) isCallAllowed(baseCallID string) (bool, string, string) {
+	if len(p.allowFilters) == 0 {
+		return true, "", ""
 	}
-	vdn := p.extractVDN(baseCallID)
-	if vdn == "" {
-		return true
+	meta := p.getSessionMeta(baseCallID)
+	for _, f := range p.allowFilters {
+		var raw string
+		if meta != nil {
+			raw = meta[f.field]
+		}
+		val := cleanMetaFieldValue(f.field, raw)
+		if !f.pattern.MatchString(val) {
+			return false, f.field, f.pattern.String()
+		}
 	}
-	_, ok := p.allowedVDNs[vdn]
-	return ok
+	return true, "", ""
 }
 
 // getOrCreateConn returns the shared callState for a call, creating the
@@ -716,9 +738,11 @@ func (p *WSForwarderPool) ForwardAudio(ctx context.Context, _ string, reader io.
 		"call_id": baseCallID, "leg_index": legIndex, "call_uuid": callUUID,
 	})
 
-	if !p.isVDNAllowed(baseCallID) {
-		vdn := p.extractVDN(baseCallID)
-		log.WithField("vdn", vdn).Warn("VDN not in allowed list; discarding audio")
+	if allowed, field, pattern := p.isCallAllowed(baseCallID); !allowed {
+		log.WithFields(logrus.Fields{
+			"filter_field":   field,
+			"filter_pattern": pattern,
+		}).Warn("Call rejected by allow filter; discarding audio")
 		_, _ = io.Copy(io.Discard, reader)
 		return nil
 	}
