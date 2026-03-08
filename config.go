@@ -32,23 +32,23 @@ func (d Duration) Duration() time.Duration { return time.Duration(d) }
 
 // Config holds all application configuration (file, env, defaults via Viper).
 type Config struct {
-	LogLevel           string     `mapstructure:"log_level"`
-	LogFormat          string     `mapstructure:"log_format"`
-	BotWSURL           string     `mapstructure:"bot_ws_url"`
-	SIPHost            string     `mapstructure:"sip_host"`
-	SIPPorts           []int      `mapstructure:"sip_ports"`
-	RTPPortMin         int        `mapstructure:"rtp_port_min"`
-	RTPPortMax         int        `mapstructure:"rtp_port_max"`
-	RTPTimeout         Duration   `mapstructure:"rtp_timeout"`
-	MaxConcurrentCalls  int        `mapstructure:"max_concurrent_calls"`
-	RedisAddress       string     `mapstructure:"redis_address"`
-	RedisPassword      string     `mapstructure:"redis_password"`
-	RedisDatabase      int        `mapstructure:"redis_database"`
-	RecordingDir       string     `mapstructure:"recording_dir"`
-	ExternalIP         string     `mapstructure:"external_ip"`
-	BehindNAT          bool       `mapstructure:"behind_nat"`
-	HTTPPort           int        `mapstructure:"http_port"`
-	GCS                GCSConfig  `mapstructure:"gcs"`
+	LogLevel           string    `mapstructure:"log_level"`
+	LogFormat          string    `mapstructure:"log_format"`
+	BotWSURL           string    `mapstructure:"bot_ws_url"`
+	SIPHost            string    `mapstructure:"sip_host"`
+	SIPPorts           []int     `mapstructure:"sip_ports"`
+	RTPPortMin         int       `mapstructure:"rtp_port_min"`
+	RTPPortMax         int       `mapstructure:"rtp_port_max"`
+	RTPTimeout         Duration  `mapstructure:"rtp_timeout"`
+	MaxConcurrentCalls int       `mapstructure:"max_concurrent_calls"`
+	RedisAddress       string    `mapstructure:"redis_address"`
+	RedisPassword      string    `mapstructure:"redis_password"`
+	RedisDatabase      int       `mapstructure:"redis_database"`
+	RecordingDir       string    `mapstructure:"recording_dir"`
+	ExternalIP         string    `mapstructure:"external_ip"`
+	BehindNAT          bool      `mapstructure:"behind_nat"`
+	HTTPPort           int       `mapstructure:"http_port"`
+	GCS                GCSConfig `mapstructure:"gcs"`
 }
 
 // GCSConfig holds GCS recording upload settings.

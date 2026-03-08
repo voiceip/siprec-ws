@@ -121,7 +121,7 @@ func main() {
 		logger.WithError(err).Fatal("Failed to create SIP handler")
 	}
 
-	pool := NewWSForwarderPool(cfg.BotWSURL, logger)
+	pool := NewWSForwarderPool(cfg.BotWSURL, logger, cfg.AllowedVDNs)
 	handler.STTCallback = pool.ForwardAudio
 	handler.SessionMetadataCallback = pool.StoreStreamMeta
 	logger.WithField("bot_ws_url", cfg.BotWSURL).Info("STTCallback replaced with WebSocket forwarder")

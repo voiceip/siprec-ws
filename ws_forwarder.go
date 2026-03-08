@@ -406,18 +406,21 @@ type callState struct {
 // WSForwarderPool manages WebSocket connections to the voice-bot, keyed by
 // base call ID (i.e. without the _legN suffix).
 type WSForwarderPool struct {
-	botURL     string
-	conns      sync.Map // map[string]*callState
-	streamMeta sync.Map // map[streamCallUUID]map[string]string – SIP participant metadata per leg
-	sf         singleflight.Group
-	logger     *logrus.Logger
+	botURL      string
+	conns       sync.Map // map[string]*callState
+	streamMeta  sync.Map // map[streamCallUUID]map[string]string – SIP participant metadata per leg
+	sf          singleflight.Group
+	logger      *logrus.Logger
+	allowedVDNs map[string]struct{} // nil means all VDNs allowed
 }
 
 // NewWSForwarderPool creates a pool that dials the given bot WebSocket URL.
-func NewWSForwarderPool(botURL string, logger *logrus.Logger) *WSForwarderPool {
+// allowedVDNs restricts forwarding to the listed VDNs; nil or empty disables filtering.
+func NewWSForwarderPool(botURL string, logger *logrus.Logger, allowedVDNs map[string]struct{}) *WSForwarderPool {
 	return &WSForwarderPool{
-		botURL: botURL,
-		logger: logger,
+		botURL:      botURL,
+		logger:      logger,
+		allowedVDNs: allowedVDNs,
 	}
 }
 
@@ -550,6 +553,44 @@ func (p *WSForwarderPool) collectSIPMetadata(baseCallID string) map[string]strin
 	return out
 }
 
+// extractVDN returns the VDN from sip_to if the user part is exactly 5 digits
+// (e.g. "61378" from "61378@172.25.12.196:5090").
+func (p *WSForwarderPool) extractVDN(baseCallID string) string {
+	meta := p.getSessionMeta(baseCallID)
+	if meta == nil {
+		return ""
+	}
+	sipTo := cleanSIPAddress(meta["sip_to"])
+	user := sipTo
+	if idx := strings.Index(sipTo, "@"); idx > 0 {
+		user = sipTo[:idx]
+	}
+	if len(user) != 5 {
+		return ""
+	}
+	for _, c := range user {
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+	return user
+}
+
+// isVDNAllowed returns true if the call's VDN passes the whitelist check.
+// When allowedVDNs is nil or empty the filter is disabled and all VDNs pass.
+// Calls without a recognisable 5-digit VDN are always allowed through.
+func (p *WSForwarderPool) isVDNAllowed(baseCallID string) bool {
+	if len(p.allowedVDNs) == 0 {
+		return true
+	}
+	vdn := p.extractVDN(baseCallID)
+	if vdn == "" {
+		return true
+	}
+	_, ok := p.allowedVDNs[vdn]
+	return ok
+}
+
 // getOrCreateConn returns the shared callState for a call, creating the
 // connection and interleaver if they don't exist yet. Concurrent calls for
 // the same baseCallID (e.g. leg0 and leg1) are coalesced so only one WebSocket
@@ -674,6 +715,13 @@ func (p *WSForwarderPool) ForwardAudio(ctx context.Context, _ string, reader io.
 	log := p.logger.WithFields(logrus.Fields{
 		"call_id": baseCallID, "leg_index": legIndex, "call_uuid": callUUID,
 	})
+
+	if !p.isVDNAllowed(baseCallID) {
+		vdn := p.extractVDN(baseCallID)
+		log.WithField("vdn", vdn).Warn("VDN not in allowed list; discarding audio")
+		_, _ = io.Copy(io.Discard, reader)
+		return nil
+	}
 
 	state, err := p.getOrCreateConn(baseCallID)
 	if err != nil {
