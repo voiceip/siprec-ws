@@ -8,6 +8,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/prometheus/client_golang v1.22.0
 	github.com/sirupsen/logrus v1.9.4
+	github.com/spf13/viper v1.21.0
 	golang.org/x/sync v0.19.0
 	siprec-server v0.0.0
 )
@@ -25,7 +26,7 @@ require (
 	cloud.google.com/go/longrunning v0.6.0 // indirect
 	cloud.google.com/go/speech v1.25.1 // indirect
 	cloud.google.com/go/storage v1.43.0 // indirect
-	filippo.io/edwards25519 v1.1.0 // indirect
+	filippo.io/edwards25519 v1.1.1 // indirect
 	github.com/Azure/azure-pipeline-go v0.2.3 // indirect
 	github.com/Azure/azure-storage-blob-go v0.15.0 // indirect
 	github.com/aws/aws-sdk-go v1.55.7 // indirect
@@ -96,7 +97,6 @@ require (
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
-	github.com/spf13/viper v1.21.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.54.0 // indirect
