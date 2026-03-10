@@ -596,12 +596,18 @@ func cleanMetaFieldValue(key, raw string) string {
 	}
 }
 
+// filterResult describes the outcome of a call allow-filter check.
+type filterResult struct {
+	Allowed bool
+	Field   string // first failing filter field (empty when Allowed is true)
+	Pattern string // first failing filter pattern (empty when Allowed is true)
+}
+
 // isCallAllowed checks whether a call's metadata passes all configured allow
-// filters. Returns true when no filters are configured (filter disabled).
-// Returns the first failing field name and pattern on rejection (for logging).
-func (p *WSForwarderPool) isCallAllowed(baseCallID string) (bool, string, string) {
+// filters. Returns Allowed=true when no filters are configured (filter disabled).
+func (p *WSForwarderPool) isCallAllowed(baseCallID string) filterResult {
 	if len(p.allowFilters) == 0 {
-		return true, "", ""
+		return filterResult{Allowed: true}
 	}
 	meta := p.getSessionMeta(baseCallID)
 	for _, f := range p.allowFilters {
@@ -611,10 +617,10 @@ func (p *WSForwarderPool) isCallAllowed(baseCallID string) (bool, string, string
 		}
 		val := cleanMetaFieldValue(f.field, raw)
 		if !f.pattern.MatchString(val) {
-			return false, f.field, f.pattern.String()
+			return filterResult{Allowed: false, Field: f.field, Pattern: f.pattern.String()}
 		}
 	}
-	return true, "", ""
+	return filterResult{Allowed: true}
 }
 
 // getOrCreateConn returns the shared callState for a call, creating the
@@ -748,16 +754,12 @@ func (p *WSForwarderPool) ForwardAudio(ctx context.Context, _ string, reader io.
 		const maxRetries = 10
 		const retryInterval = 50 * time.Millisecond
 
-		allowed := false
-		var rejectField, rejectPattern string
+		var result filterResult
 		for attempt := 0; attempt <= maxRetries; attempt++ {
-			ok, field, pattern := p.isCallAllowed(baseCallID)
-			if ok {
-				allowed = true
+			result = p.isCallAllowed(baseCallID)
+			if result.Allowed {
 				break
 			}
-			rejectField = field
-			rejectPattern = pattern
 
 			// If metadata is present, the denial is definitive.
 			if p.getSessionMeta(baseCallID) != nil {
@@ -775,10 +777,10 @@ func (p *WSForwarderPool) ForwardAudio(ctx context.Context, _ string, reader io.
 				}
 			}
 		}
-		if !allowed {
+		if !result.Allowed {
 			log.WithFields(logrus.Fields{
-				"filter_field":   rejectField,
-				"filter_pattern": rejectPattern,
+				"filter_field":   result.Field,
+				"filter_pattern": result.Pattern,
 			}).Warn("Call rejected by allow filter; discarding audio")
 			_, _ = io.Copy(io.Discard, reader)
 			return nil
