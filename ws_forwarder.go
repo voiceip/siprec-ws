@@ -689,9 +689,7 @@ func (p *WSForwarderPool) getOrCreateConn(baseCallID string) (*callState, error)
 // removeConn removes a connection and its associated metadata from the pool.
 func (p *WSForwarderPool) removeConn(baseCallID string) {
 	p.conns.Delete(baseCallID)
-	for _, key := range []string{"_leg0", "_leg1", "_10", "_20"} {
-		p.streamMeta.Delete(baseCallID + key)
-	}
+	p.removeStreamMeta(baseCallID)
 	DecBridgeActiveWSConnections()
 }
 
