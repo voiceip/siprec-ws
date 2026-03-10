@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -403,22 +404,51 @@ type callState struct {
 	startTime time.Time
 }
 
+// compiledFilter holds a pre-compiled allow filter rule.
+type compiledFilter struct {
+	field   string
+	pattern *regexp.Regexp
+}
+
+// CompileCallFilters pre-compiles filter rules into ready-to-match filters.
+func CompileCallFilters(rules []CallFilterRule) ([]compiledFilter, error) {
+	if len(rules) == 0 {
+		return nil, nil
+	}
+	out := make([]compiledFilter, len(rules))
+	for i, r := range rules {
+		re, err := regexp.Compile(r.Pattern)
+		if err != nil {
+			return nil, fmt.Errorf("filter[%d] field=%q: invalid pattern %q: %w", i, r.Field, r.Pattern, err)
+		}
+		out[i] = compiledFilter{field: r.Field, pattern: re}
+	}
+	return out, nil
+}
+
 // WSForwarderPool manages WebSocket connections to the voice-bot, keyed by
 // base call ID (i.e. without the _legN suffix).
 type WSForwarderPool struct {
-	botURL     string
-	conns      sync.Map // map[string]*callState
-	streamMeta sync.Map // map[streamCallUUID]map[string]string – SIP participant metadata per leg
-	sf         singleflight.Group
-	logger     *logrus.Logger
+	botURL       string
+	conns        sync.Map // map[string]*callState
+	streamMeta   sync.Map // map[streamCallUUID]map[string]string – SIP participant metadata per leg
+	sf           singleflight.Group
+	logger       *logrus.Logger
+	allowFilters []compiledFilter // nil, empty slice, or slice with no elements means all calls allowed
 }
 
 // NewWSForwarderPool creates a pool that dials the given bot WebSocket URL.
-func NewWSForwarderPool(botURL string, logger *logrus.Logger) *WSForwarderPool {
-	return &WSForwarderPool{
-		botURL: botURL,
-		logger: logger,
+// filters restricts forwarding to calls matching all rules; nil disables filtering.
+func NewWSForwarderPool(botURL string, logger *logrus.Logger, filters []CallFilterRule) (*WSForwarderPool, error) {
+	allowFilters, err := CompileCallFilters(filters)
+	if err != nil {
+		return nil, fmt.Errorf("compile call allow filters: %w", err)
 	}
+	return &WSForwarderPool{
+		botURL:       botURL,
+		logger:       logger,
+		allowFilters: allowFilters,
+	}, nil
 }
 
 // StoreStreamMeta implements the SessionMetadataCallback signature. It is
@@ -550,6 +580,49 @@ func (p *WSForwarderPool) collectSIPMetadata(baseCallID string) map[string]strin
 	return out
 }
 
+// cleanMetaFieldValue applies the same cleaning as collectSIPMetadata for a
+// given metadata key so that filter patterns match against normalised values.
+func cleanMetaFieldValue(key, raw string) string {
+	switch key {
+	case "sip_from", "sip_to":
+		return cleanSIPAddress(raw)
+	case "session_id":
+		return strings.TrimSpace(raw)
+	default:
+		if strings.HasPrefix(key, "sip_") {
+			return cleanSIPMetaValue(raw)
+		}
+		return strings.TrimSpace(raw)
+	}
+}
+
+// filterResult describes the outcome of a call allow-filter check.
+type filterResult struct {
+	Allowed bool
+	Field   string // first failing filter field (empty when Allowed is true)
+	Pattern string // first failing filter pattern (empty when Allowed is true)
+}
+
+// isCallAllowed checks whether a call's metadata passes all configured allow
+// filters. Returns Allowed=true when no filters are configured (filter disabled).
+func (p *WSForwarderPool) isCallAllowed(baseCallID string) filterResult {
+	if len(p.allowFilters) == 0 {
+		return filterResult{Allowed: true}
+	}
+	meta := p.getSessionMeta(baseCallID)
+	for _, f := range p.allowFilters {
+		var raw string
+		if meta != nil {
+			raw = meta[f.field]
+		}
+		val := cleanMetaFieldValue(f.field, raw)
+		if !f.pattern.MatchString(val) {
+			return filterResult{Allowed: false, Field: f.field, Pattern: f.pattern.String()}
+		}
+	}
+	return filterResult{Allowed: true}
+}
+
 // getOrCreateConn returns the shared callState for a call, creating the
 // connection and interleaver if they don't exist yet. Concurrent calls for
 // the same baseCallID (e.g. leg0 and leg1) are coalesced so only one WebSocket
@@ -674,6 +747,45 @@ func (p *WSForwarderPool) ForwardAudio(ctx context.Context, _ string, reader io.
 	log := p.logger.WithFields(logrus.Fields{
 		"call_id": baseCallID, "leg_index": legIndex, "call_uuid": callUUID,
 	})
+
+	// Allow-filter check with bounded retry: metadata may not have arrived yet
+	// (StoreStreamMeta / SessionMetadataCallback races with ForwardAudio / STTCallback).
+	if len(p.allowFilters) > 0 {
+		const maxRetries = 10
+		const retryInterval = 50 * time.Millisecond
+
+		var result filterResult
+		for attempt := 0; attempt <= maxRetries; attempt++ {
+			result = p.isCallAllowed(baseCallID)
+			if result.Allowed {
+				break
+			}
+
+			// If metadata is present, the denial is definitive.
+			if p.getSessionMeta(baseCallID) != nil {
+				break
+			}
+
+			// Metadata hasn't arrived yet; wait and retry.
+			if attempt < maxRetries {
+				select {
+				case <-ctx.Done():
+					log.Info("Context cancelled while waiting for metadata; discarding audio")
+					_, _ = io.Copy(io.Discard, reader)
+					return nil
+				case <-time.After(retryInterval):
+				}
+			}
+		}
+		if !result.Allowed {
+			log.WithFields(logrus.Fields{
+				"filter_field":   result.Field,
+				"filter_pattern": result.Pattern,
+			}).Warn("Call rejected by allow filter; discarding audio")
+			_, _ = io.Copy(io.Discard, reader)
+			return nil
+		}
+	}
 
 	state, err := p.getOrCreateConn(baseCallID)
 	if err != nil {

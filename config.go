@@ -4,9 +4,11 @@ import (
 	"encoding"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 )
 
@@ -32,23 +34,24 @@ func (d Duration) Duration() time.Duration { return time.Duration(d) }
 
 // Config holds all application configuration (file, env, defaults via Viper).
 type Config struct {
-	LogLevel           string     `mapstructure:"log_level"`
-	LogFormat          string     `mapstructure:"log_format"`
-	BotWSURL           string     `mapstructure:"bot_ws_url"`
-	SIPHost            string     `mapstructure:"sip_host"`
-	SIPPorts           []int      `mapstructure:"sip_ports"`
-	RTPPortMin         int        `mapstructure:"rtp_port_min"`
-	RTPPortMax         int        `mapstructure:"rtp_port_max"`
-	RTPTimeout         Duration   `mapstructure:"rtp_timeout"`
-	MaxConcurrentCalls  int        `mapstructure:"max_concurrent_calls"`
-	RedisAddress       string     `mapstructure:"redis_address"`
-	RedisPassword      string     `mapstructure:"redis_password"`
-	RedisDatabase      int        `mapstructure:"redis_database"`
-	RecordingDir       string     `mapstructure:"recording_dir"`
-	ExternalIP         string     `mapstructure:"external_ip"`
-	BehindNAT          bool       `mapstructure:"behind_nat"`
-	HTTPPort           int        `mapstructure:"http_port"`
-	GCS                GCSConfig  `mapstructure:"gcs"`
+	LogLevel           string           `mapstructure:"log_level"`
+	LogFormat          string           `mapstructure:"log_format"`
+	BotWSURL           string           `mapstructure:"bot_ws_url"`
+	SIPHost            string           `mapstructure:"sip_host"`
+	SIPPorts           []int            `mapstructure:"sip_ports"`
+	RTPPortMin         int              `mapstructure:"rtp_port_min"`
+	RTPPortMax         int              `mapstructure:"rtp_port_max"`
+	RTPTimeout         Duration         `mapstructure:"rtp_timeout"`
+	MaxConcurrentCalls int              `mapstructure:"max_concurrent_calls"`
+	RedisAddress       string           `mapstructure:"redis_address"`
+	RedisPassword      string           `mapstructure:"redis_password"`
+	RedisDatabase      int              `mapstructure:"redis_database"`
+	RecordingDir       string           `mapstructure:"recording_dir"`
+	ExternalIP         string           `mapstructure:"external_ip"`
+	BehindNAT          bool             `mapstructure:"behind_nat"`
+	HTTPPort           int              `mapstructure:"http_port"`
+	GCS                GCSConfig        `mapstructure:"gcs"`
+	CallAllowFilters   []CallFilterRule `mapstructure:"call_allow_filters"`
 }
 
 // GCSConfig holds GCS recording upload settings.
@@ -58,6 +61,13 @@ type GCSConfig struct {
 	Prefix            string `mapstructure:"prefix"`
 	ServiceAccountKey string `mapstructure:"service_account_key"`
 	KeepLocal         bool   `mapstructure:"keep_local"`
+}
+
+// CallFilterRule defines a single allow filter rule: a metadata field and
+// a regex pattern. The call is allowed only if the field value matches.
+type CallFilterRule struct {
+	Field   string `mapstructure:"field"`
+	Pattern string `mapstructure:"pattern"`
 }
 
 // ConfigPathEnv is the environment variable used to specify the config file path.
@@ -92,7 +102,10 @@ func LoadConfig() (*Config, error) {
 	}
 
 	var cfg Config
-	if err := v.Unmarshal(&cfg); err != nil {
+	if err := v.Unmarshal(&cfg, viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(
+		mapstructure.StringToTimeDurationHookFunc(),
+		stringToDurationHookFunc(),
+	))); err != nil {
 		return nil, &configError{msg: fmt.Sprintf("unmarshal config: %v", err)}
 	}
 
@@ -129,6 +142,28 @@ func LoadConfig() (*Config, error) {
 	return &cfg, nil
 }
 
+// stringToDurationHookFunc decodes string values (e.g. "30s") into main.Duration.
+// Mapstructure does not use TextUnmarshaler for our type, so we need an explicit hook.
+func stringToDurationHookFunc() mapstructure.DecodeHookFunc {
+	return func(f, t reflect.Type, data interface{}) (interface{}, error) {
+		if f != nil && f.Kind() != reflect.String {
+			return data, nil
+		}
+		if t != reflect.TypeOf(Duration(0)) {
+			return data, nil
+		}
+		s, ok := data.(string)
+		if !ok {
+			return data, nil
+		}
+		d, err := time.ParseDuration(strings.TrimSpace(s))
+		if err != nil {
+			return nil, err
+		}
+		return Duration(d), nil
+	}
+}
+
 func setDefaults(v *viper.Viper) {
 	v.SetDefault("log_level", "info")
 	v.SetDefault("log_format", "json")
@@ -145,6 +180,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("http_port", 8080)
 	v.SetDefault("gcs.prefix", "recordings")
 	v.SetDefault("gcs.keep_local", true)
+	v.SetDefault("call_allow_filters", []CallFilterRule{})
 }
 
 type configError struct{ msg string }
