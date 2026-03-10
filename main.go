@@ -17,7 +17,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/joho/godotenv"
 	"github.com/sirupsen/logrus"
 
 	"siprec-server/pkg/backup"
@@ -30,9 +29,6 @@ import (
 var Version = "0.1.0"
 
 func main() {
-	// Load environment (systemd uses EnvironmentFile; godotenv is best-effort for local .env).
-	_ = godotenv.Load()
-
 	logrus.Infof("Starting siprec-ws-bridge version %s", Version)
 
 	cfg, err := LoadConfig()
@@ -83,7 +79,7 @@ func main() {
 	mediaConfig := &media.Config{
 		RTPPortMin:       cfg.RTPPortMin,
 		RTPPortMax:       cfg.RTPPortMax,
-		RTPTimeout:       cfg.RTPTimeout,
+		RTPTimeout:       cfg.RTPTimeout.Duration(),
 		RecordingDir:     cfg.RecordingDir,
 		RecordingStorage: recordingStorage,
 		CombineLegs:      true,

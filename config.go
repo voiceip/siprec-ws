@@ -1,143 +1,152 @@
 package main
 
 import (
+	"encoding"
+	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/spf13/viper"
 )
 
-// Config holds all application configuration loaded from the environment.
+// Duration parses strings like "30s" into time.Duration.
+// Implements encoding.TextUnmarshaler for Viper/mapstructure and json.Unmarshaler for JSON.
+type Duration time.Duration
+
+// UnmarshalText implements encoding.TextUnmarshaler for Viper/mapstructure.
+func (d *Duration) UnmarshalText(text []byte) error {
+	v, err := time.ParseDuration(strings.TrimSpace(string(text)))
+	if err != nil {
+		return err
+	}
+	*d = Duration(v)
+	return nil
+}
+
+// Ensure compile-time satisfaction.
+var _ encoding.TextUnmarshaler = (*Duration)(nil)
+
+// Duration returns the value as time.Duration.
+func (d Duration) Duration() time.Duration { return time.Duration(d) }
+
+// Config holds all application configuration (file, env, defaults via Viper).
 type Config struct {
-	// Logging
-	LogLevel  string
-	LogFormat string
-
-	// WebSocket
-	BotWSURL string
-
-	// SIP
-	SIPHost  string
-	SIPPorts []int
-
-	// RTP
-	RTPPortMin         int
-	RTPPortMax         int
-	RTPTimeout         time.Duration
-	MaxConcurrentCalls int
-
-	// Redis
-	RedisAddress  string
-	RedisPassword string
-	RedisDatabase int
-
-	// Recording
-	RecordingDir string
-
-	// NAT
-	ExternalIP string
-	BehindNAT  bool
-
-	// GCS (optional)
-	GCS GCSConfig
-
-	// HTTP server
-	HTTPPort int
+	LogLevel           string     `mapstructure:"log_level"`
+	LogFormat          string     `mapstructure:"log_format"`
+	BotWSURL           string     `mapstructure:"bot_ws_url"`
+	SIPHost            string     `mapstructure:"sip_host"`
+	SIPPorts           []int      `mapstructure:"sip_ports"`
+	RTPPortMin         int        `mapstructure:"rtp_port_min"`
+	RTPPortMax         int        `mapstructure:"rtp_port_max"`
+	RTPTimeout         Duration   `mapstructure:"rtp_timeout"`
+	MaxConcurrentCalls  int        `mapstructure:"max_concurrent_calls"`
+	RedisAddress       string     `mapstructure:"redis_address"`
+	RedisPassword      string     `mapstructure:"redis_password"`
+	RedisDatabase      int        `mapstructure:"redis_database"`
+	RecordingDir       string     `mapstructure:"recording_dir"`
+	ExternalIP         string     `mapstructure:"external_ip"`
+	BehindNAT          bool       `mapstructure:"behind_nat"`
+	HTTPPort           int        `mapstructure:"http_port"`
+	GCS                GCSConfig  `mapstructure:"gcs"`
 }
 
 // GCSConfig holds GCS recording upload settings.
 type GCSConfig struct {
-	Enabled           bool
-	Bucket            string
-	Prefix            string
-	ServiceAccountKey string
-	KeepLocal         bool
+	Enabled           bool   `mapstructure:"enabled"`
+	Bucket            string `mapstructure:"bucket"`
+	Prefix            string `mapstructure:"prefix"`
+	ServiceAccountKey string `mapstructure:"service_account_key"`
+	KeepLocal         bool   `mapstructure:"keep_local"`
 }
 
-// LoadConfig builds Config from the environment. Call after godotenv.Load().
-// Returns an error if required fields are missing.
+// ConfigPathEnv is the environment variable used to specify the config file path.
+const ConfigPathEnv = "CONFIG_PATH"
+
+// DefaultConfigPath is used when CONFIG_PATH is not set.
+const DefaultConfigPath = "config.json"
+
+// LoadConfig loads config using Viper: config file (JSON/YAML/TOML/etc.) with defaults and optional env overrides.
 func LoadConfig() (*Config, error) {
-	cfg := &Config{
-		LogLevel:           envStr("LOG_LEVEL", "info"),
-		LogFormat:          envStr("LOG_FORMAT", "json"),
-		BotWSURL:           envStr("BOT_WS_URL", ""),
-		SIPHost:            envStr("SIP_HOST", "0.0.0.0"),
-		RTPPortMin:         envInt("RTP_PORT_MIN", 10000),
-		RTPPortMax:         envInt("RTP_PORT_MAX", 20000),
-		RTPTimeout:         envDuration("RTP_TIMEOUT", 30*time.Second),
-		RecordingDir:       envStr("RECORDING_DIR", "./recordings"),
-		ExternalIP:         envStr("EXTERNAL_IP", "auto"),
-		BehindNAT:          envBool("BEHIND_NAT", false),
-		HTTPPort:           envInt("HTTP_PORT", 8080),
-		MaxConcurrentCalls: envInt("MAX_CALLS", 500),
-		RedisAddress:       envStr("REDIS_ADDRESS", "localhost:6379"),
-		RedisPassword:      envStr("REDIS_PASSWORD", ""),
-		RedisDatabase:      envInt("REDIS_DATABASE", 0),
+	path := os.Getenv(ConfigPathEnv)
+	if path == "" {
+		path = DefaultConfigPath
 	}
 
-	if cfg.BotWSURL == "" {
-		return nil, &configError{msg: "BOT_WS_URL is required (e.g. ws://localhost:7860/siprec-ws)"}
-	}
+	v := viper.New()
+	v.SetConfigFile(path)
+	v.SetConfigType("json")
 
-	// SIP ports (comma-separated)
-	sipPortsStr := envStr("SIP_PORTS", "5060")
-	for _, s := range strings.Split(sipPortsStr, ",") {
-		s = strings.TrimSpace(s)
-		if p, err := strconv.Atoi(s); err == nil && p > 0 {
-			cfg.SIPPorts = append(cfg.SIPPorts, p)
+	// Defaults (overridden by config file and env)
+	setDefaults(v)
+
+	// Env overrides: e.g. LOG_LEVEL, BOT_WS_URL (case-insensitive keys)
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
+	v.AutomaticEnv()
+
+	if err := v.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			return nil, &configError{msg: fmt.Sprintf("config file: %v", err)}
 		}
+		// Config file not found; use defaults + env only
+	}
+
+	var cfg Config
+	if err := v.Unmarshal(&cfg); err != nil {
+		return nil, &configError{msg: fmt.Sprintf("unmarshal config: %v", err)}
+	}
+
+	// Normalise and validate
+	cfg.BotWSURL = strings.TrimSpace(cfg.BotWSURL)
+	if cfg.RTPTimeout == 0 {
+		cfg.RTPTimeout = Duration(30 * time.Second)
 	}
 	if len(cfg.SIPPorts) == 0 {
 		cfg.SIPPorts = []int{5060}
-	}
-
-	// GCS
-	cfg.GCS.Enabled = envBool("GCS_ENABLED", false)
-	if cfg.GCS.Enabled {
-		cfg.GCS.Bucket = envStr("GCS_BUCKET", "")
-		if cfg.GCS.Bucket == "" {
-			return nil, &configError{msg: "GCS_ENABLED is true but GCS_BUCKET is empty"}
+	} else {
+		filtered := cfg.SIPPorts[:0]
+		for _, p := range cfg.SIPPorts {
+			if p > 0 {
+				filtered = append(filtered, p)
+			}
 		}
-		cfg.GCS.Prefix = envStr("GCS_PREFIX", "recordings")
-		cfg.GCS.ServiceAccountKey = envStr("GCS_SERVICE_ACCOUNT_KEY", "")
-		cfg.GCS.KeepLocal = envBool("GCS_KEEP_LOCAL", true)
+		cfg.SIPPorts = filtered
+		if len(cfg.SIPPorts) == 0 {
+			cfg.SIPPorts = []int{5060}
+		}
+	}
+	if cfg.GCS.Enabled && strings.TrimSpace(cfg.GCS.Prefix) == "" {
+		cfg.GCS.Prefix = "recordings"
 	}
 
-	return cfg, nil
+	if cfg.BotWSURL == "" {
+		return nil, &configError{msg: "bot_ws_url is required (e.g. ws://localhost:7860/siprec-ws)"}
+	}
+	if cfg.GCS.Enabled && strings.TrimSpace(cfg.GCS.Bucket) == "" {
+		return nil, &configError{msg: "gcs.enabled is true but gcs.bucket is empty"}
+	}
+
+	return &cfg, nil
+}
+
+func setDefaults(v *viper.Viper) {
+	v.SetDefault("log_level", "info")
+	v.SetDefault("log_format", "json")
+	v.SetDefault("sip_host", "0.0.0.0")
+	v.SetDefault("sip_ports", []int{5060})
+	v.SetDefault("rtp_port_min", 10000)
+	v.SetDefault("rtp_port_max", 20000)
+	v.SetDefault("rtp_timeout", "30s")
+	v.SetDefault("max_concurrent_calls", 500)
+	v.SetDefault("redis_address", "localhost:6379")
+	v.SetDefault("redis_database", 0)
+	v.SetDefault("recording_dir", "./recordings")
+	v.SetDefault("external_ip", "auto")
+	v.SetDefault("http_port", 8080)
+	v.SetDefault("gcs.prefix", "recordings")
+	v.SetDefault("gcs.keep_local", true)
 }
 
 type configError struct{ msg string }
 
 func (e *configError) Error() string { return e.msg }
-
-func envStr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func envInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			return i
-		}
-	}
-	return fallback
-}
-
-func envBool(key string, fallback bool) bool {
-	if v := os.Getenv(key); v != "" {
-		return strings.EqualFold(v, "true") || v == "1"
-	}
-	return fallback
-}
-
-func envDuration(key string, fallback time.Duration) time.Duration {
-	if v := os.Getenv(key); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-	}
-	return fallback
-}

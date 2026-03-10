@@ -1,0 +1,25 @@
+{
+  "log_level": "info",
+  "log_format": "json",
+  "bot_ws_url": "ws://localhost:7860/siprec-ws",
+  "sip_host": "0.0.0.0",
+  "sip_ports": [5060],
+  "rtp_port_min": 10000,
+  "rtp_port_max": 20000,
+  "rtp_timeout": "30s",
+  "max_concurrent_calls": 500,
+  "redis_address": "localhost:6379",
+  "redis_password": "",
+  "redis_database": 0,
+  "recording_dir": "./recordings",
+  "external_ip": "auto",
+  "behind_nat": false,
+  "http_port": 8080,
+  "gcs": {
+    "enabled": false,
+    "bucket": "",
+    "prefix": "recordings",
+    "service_account_key": "",
+    "keep_local": true
+  }
+}
