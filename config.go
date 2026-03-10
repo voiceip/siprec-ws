@@ -4,9 +4,11 @@ import (
 	"encoding"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 )
 
@@ -100,7 +102,10 @@ func LoadConfig() (*Config, error) {
 	}
 
 	var cfg Config
-	if err := v.Unmarshal(&cfg); err != nil {
+	if err := v.Unmarshal(&cfg, viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(
+		mapstructure.StringToTimeDurationHookFunc(),
+		stringToDurationHookFunc(),
+	))); err != nil {
 		return nil, &configError{msg: fmt.Sprintf("unmarshal config: %v", err)}
 	}
 
@@ -135,6 +140,28 @@ func LoadConfig() (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// stringToDurationHookFunc decodes string values (e.g. "30s") into main.Duration.
+// Mapstructure does not use TextUnmarshaler for our type, so we need an explicit hook.
+func stringToDurationHookFunc() mapstructure.DecodeHookFunc {
+	return func(f, t reflect.Type, data interface{}) (interface{}, error) {
+		if f != nil && f.Kind() != reflect.String {
+			return data, nil
+		}
+		if t != reflect.TypeOf(Duration(0)) {
+			return data, nil
+		}
+		s, ok := data.(string)
+		if !ok {
+			return data, nil
+		}
+		d, err := time.ParseDuration(strings.TrimSpace(s))
+		if err != nil {
+			return nil, err
+		}
+		return Duration(d), nil
+	}
 }
 
 func setDefaults(v *viper.Viper) {
