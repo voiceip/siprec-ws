@@ -2,11 +2,8 @@ package main
 
 import (
 	"encoding"
-	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -35,23 +32,24 @@ func (d Duration) Duration() time.Duration { return time.Duration(d) }
 
 // Config holds all application configuration (file, env, defaults via Viper).
 type Config struct {
-	LogLevel           string    `mapstructure:"log_level"`
-	LogFormat          string    `mapstructure:"log_format"`
-	BotWSURL           string    `mapstructure:"bot_ws_url"`
-	SIPHost            string    `mapstructure:"sip_host"`
-	SIPPorts           []int     `mapstructure:"sip_ports"`
-	RTPPortMin         int       `mapstructure:"rtp_port_min"`
-	RTPPortMax         int       `mapstructure:"rtp_port_max"`
-	RTPTimeout         Duration  `mapstructure:"rtp_timeout"`
-	MaxConcurrentCalls int       `mapstructure:"max_concurrent_calls"`
-	RedisAddress       string    `mapstructure:"redis_address"`
-	RedisPassword      string    `mapstructure:"redis_password"`
-	RedisDatabase      int       `mapstructure:"redis_database"`
-	RecordingDir       string    `mapstructure:"recording_dir"`
-	ExternalIP         string    `mapstructure:"external_ip"`
-	BehindNAT          bool      `mapstructure:"behind_nat"`
-	HTTPPort           int       `mapstructure:"http_port"`
-	GCS                GCSConfig `mapstructure:"gcs"`
+	LogLevel           string           `mapstructure:"log_level"`
+	LogFormat          string           `mapstructure:"log_format"`
+	BotWSURL           string           `mapstructure:"bot_ws_url"`
+	SIPHost            string           `mapstructure:"sip_host"`
+	SIPPorts           []int            `mapstructure:"sip_ports"`
+	RTPPortMin         int              `mapstructure:"rtp_port_min"`
+	RTPPortMax         int              `mapstructure:"rtp_port_max"`
+	RTPTimeout         Duration         `mapstructure:"rtp_timeout"`
+	MaxConcurrentCalls int              `mapstructure:"max_concurrent_calls"`
+	RedisAddress       string           `mapstructure:"redis_address"`
+	RedisPassword      string           `mapstructure:"redis_password"`
+	RedisDatabase      int              `mapstructure:"redis_database"`
+	RecordingDir       string           `mapstructure:"recording_dir"`
+	ExternalIP         string           `mapstructure:"external_ip"`
+	BehindNAT          bool             `mapstructure:"behind_nat"`
+	HTTPPort           int              `mapstructure:"http_port"`
+	GCS                GCSConfig        `mapstructure:"gcs"`
+	CallAllowFilters   []CallFilterRule `mapstructure:"call_allow_filters"`
 }
 
 // GCSConfig holds GCS recording upload settings.
@@ -61,6 +59,13 @@ type GCSConfig struct {
 	Prefix            string `mapstructure:"prefix"`
 	ServiceAccountKey string `mapstructure:"service_account_key"`
 	KeepLocal         bool   `mapstructure:"keep_local"`
+}
+
+// CallFilterRule defines a single allow filter rule: a metadata field and
+// a regex pattern. The call is allowed only if the field value matches.
+type CallFilterRule struct {
+	Field   string `mapstructure:"field"`
+	Pattern string `mapstructure:"pattern"`
 }
 
 // ConfigPathEnv is the environment variable used to specify the config file path.
@@ -148,52 +153,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("http_port", 8080)
 	v.SetDefault("gcs.prefix", "recordings")
 	v.SetDefault("gcs.keep_local", true)
-}
-
-// LoadCallFilters reads call allow filters from a YAML config file.
-// The file path is taken from the CONFIG_FILE env var (default ./config.yaml).
-// Returns nil with no error if the file does not exist (filter disabled).
-func LoadCallFilters() ([]CallFilterRule, error) {
-	cfgFile := envStr("CONFIG_FILE", "./config.yaml")
-
-	v := viper.New()
-	v.SetConfigFile(cfgFile)
-
-	dir := filepath.Dir(cfgFile)
-	base := filepath.Base(cfgFile)
-	ext := filepath.Ext(base)
-	name := strings.TrimSuffix(base, ext)
-
-	v.SetConfigName(name)
-	v.SetConfigType(strings.TrimPrefix(ext, "."))
-	v.AddConfigPath(dir)
-
-	if err := v.ReadInConfig(); err != nil {
-		var notFound viper.ConfigFileNotFoundError
-		if errors.As(err, &notFound) {
-			return nil, nil
-		}
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("reading config file %s: %w", cfgFile, err)
-	}
-
-	var rules []CallFilterRule
-	if err := v.UnmarshalKey("call_allow_filters", &rules); err != nil {
-		return nil, fmt.Errorf("parsing call_allow_filters from %s: %w", cfgFile, err)
-	}
-
-	for i, r := range rules {
-		if r.Field == "" {
-			return nil, fmt.Errorf("call_allow_filters[%d]: field is required", i)
-		}
-		if _, err := regexp.Compile(r.Pattern); err != nil {
-			return nil, fmt.Errorf("call_allow_filters[%d]: invalid pattern %q: %w", i, r.Pattern, err)
-		}
-	}
-
-	return rules, nil
+	v.SetDefault("call_allow_filters", []CallFilterRule{})
 }
 
 type configError struct{ msg string }

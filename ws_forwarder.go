@@ -434,16 +434,20 @@ type WSForwarderPool struct {
 	streamMeta   sync.Map // map[streamCallUUID]map[string]string – SIP participant metadata per leg
 	sf           singleflight.Group
 	logger       *logrus.Logger
-	allowFilters []compiledFilter // nil means all calls allowed
+	allowFilters []compiledFilter // nil, empty slice, or slice with no elements means all calls allowed
 }
 
 // NewWSForwarderPool creates a pool that dials the given bot WebSocket URL.
 // filters restricts forwarding to calls matching all rules; nil disables filtering.
-func NewWSForwarderPool(botURL string, logger *logrus.Logger, filters []compiledFilter) *WSForwarderPool {
+func NewWSForwarderPool(botURL string, logger *logrus.Logger, filters []CallFilterRule) *WSForwarderPool {
+	allowFilters, err := CompileCallFilters(filters)
+	if err != nil {
+		logger.WithError(err).Fatal("Failed to compile call allow filters")
+	}
 	return &WSForwarderPool{
 		botURL:       botURL,
 		logger:       logger,
-		allowFilters: filters,
+		allowFilters: allowFilters,
 	}
 }
 

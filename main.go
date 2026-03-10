@@ -36,12 +36,6 @@ func main() {
 		logrus.WithError(err).Fatal("Invalid config")
 	}
 
-	callFilters, err := LoadCallFilters()
-	if err != nil {
-		logrus.WithError(err).Fatal("Failed to load call allow filters from config file")
-	}
-	cfg.CallAllowFilters = callFilters
-
 	logger := logrus.New()
 	logger.SetFormatter(&logrus.JSONFormatter{})
 	if lvl, err := logrus.ParseLevel(cfg.LogLevel); err == nil {
@@ -127,12 +121,10 @@ func main() {
 		logger.WithError(err).Fatal("Failed to create SIP handler")
 	}
 
-	filters, err := CompileCallFilters(cfg.CallAllowFilters)
-	if err != nil {
-		logger.WithError(err).Fatal("Failed to compile call allow filters")
+	pool := NewWSForwarderPool(cfg.BotWSURL, logger, cfg.CallAllowFilters)
+	if pool == nil {
+		logger.WithError(err).Fatal("Failed to create WebSocket forwarder pool")
 	}
-
-	pool := NewWSForwarderPool(cfg.BotWSURL, logger, filters)
 	handler.STTCallback = pool.ForwardAudio
 	handler.SessionMetadataCallback = pool.StoreStreamMeta
 	logger.WithField("bot_ws_url", cfg.BotWSURL).Info("STTCallback replaced with WebSocket forwarder")
