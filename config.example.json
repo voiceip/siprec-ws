@@ -14,12 +14,7 @@
   "recording_dir": "./recordings",
   "external_ip": "auto",
   "behind_nat": false,
-  "call_allow_filters": [
-    {
-      "field": "sip_to",
-      "pattern": "^\\d{5}@"
-    }
-  ],
+  "call_allow_filters": [],
   "http_port": 8080,
   "gcs": {
     "enabled": false,
