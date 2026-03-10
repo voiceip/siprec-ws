@@ -439,16 +439,16 @@ type WSForwarderPool struct {
 
 // NewWSForwarderPool creates a pool that dials the given bot WebSocket URL.
 // filters restricts forwarding to calls matching all rules; nil disables filtering.
-func NewWSForwarderPool(botURL string, logger *logrus.Logger, filters []CallFilterRule) *WSForwarderPool {
+func NewWSForwarderPool(botURL string, logger *logrus.Logger, filters []CallFilterRule) (*WSForwarderPool, error) {
 	allowFilters, err := CompileCallFilters(filters)
 	if err != nil {
-		logger.WithError(err).Fatal("Failed to compile call allow filters")
+		return nil, fmt.Errorf("compile call allow filters: %w", err)
 	}
 	return &WSForwarderPool{
 		botURL:       botURL,
 		logger:       logger,
 		allowFilters: allowFilters,
-	}
+	}, nil
 }
 
 // StoreStreamMeta implements the SessionMetadataCallback signature. It is
@@ -742,13 +742,47 @@ func (p *WSForwarderPool) ForwardAudio(ctx context.Context, _ string, reader io.
 		"call_id": baseCallID, "leg_index": legIndex, "call_uuid": callUUID,
 	})
 
-	if allowed, field, pattern := p.isCallAllowed(baseCallID); !allowed {
-		log.WithFields(logrus.Fields{
-			"filter_field":   field,
-			"filter_pattern": pattern,
-		}).Warn("Call rejected by allow filter; discarding audio")
-		_, _ = io.Copy(io.Discard, reader)
-		return nil
+	// Allow-filter check with bounded retry: metadata may not have arrived yet
+	// (StoreStreamMeta / SessionMetadataCallback races with ForwardAudio / STTCallback).
+	if len(p.allowFilters) > 0 {
+		const maxRetries = 10
+		const retryInterval = 50 * time.Millisecond
+
+		allowed := false
+		var rejectField, rejectPattern string
+		for attempt := 0; attempt <= maxRetries; attempt++ {
+			ok, field, pattern := p.isCallAllowed(baseCallID)
+			if ok {
+				allowed = true
+				break
+			}
+			rejectField = field
+			rejectPattern = pattern
+
+			// If metadata is present, the denial is definitive.
+			if p.getSessionMeta(baseCallID) != nil {
+				break
+			}
+
+			// Metadata hasn't arrived yet; wait and retry.
+			if attempt < maxRetries {
+				select {
+				case <-ctx.Done():
+					log.Info("Context cancelled while waiting for metadata; discarding audio")
+					_, _ = io.Copy(io.Discard, reader)
+					return nil
+				case <-time.After(retryInterval):
+				}
+			}
+		}
+		if !allowed {
+			log.WithFields(logrus.Fields{
+				"filter_field":   rejectField,
+				"filter_pattern": rejectPattern,
+			}).Warn("Call rejected by allow filter; discarding audio")
+			_, _ = io.Copy(io.Discard, reader)
+			return nil
+		}
 	}
 
 	state, err := p.getOrCreateConn(baseCallID)
