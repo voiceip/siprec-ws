@@ -170,9 +170,15 @@ func cleanSIPURI(s string) string {
 
 // cleanSIPAddress cleans From/To-style SIP values for display: removes URI
 // parameters (e.g. ;tag=..., ;transport=tcp), angle brackets, and sip:/sips:
+// "Alice" <sip:1234@example.com>;tag=... -> "1234@example.com"
 // scheme, returning e.g. "user@host" or "09992006118@fkipl.flipkart.com".
 func cleanSIPAddress(s string) string {
 	s = strings.TrimSpace(s)
+	if start := strings.IndexByte(s, '<'); start >= 0 {
+		if end := strings.IndexByte(s[start+1:], '>'); end >= 0 {
+			s = s[start+1 : start+1+end]
+		}
+	}
 	if idx := strings.Index(s, ";"); idx >= 0 {
 		s = s[:idx]
 	}
@@ -580,6 +586,13 @@ func (p *WSForwarderPool) collectSIPMetadata(baseCallID string) map[string]strin
 	return out
 }
 
+// removeStreamMeta removes all stream metadata for a call.
+func (p *WSForwarderPool) removeStreamMeta(baseCallID string) {
+	for _, key := range []string{"_leg0", "_leg1", "_10", "_20"} {
+		p.streamMeta.Delete(baseCallID + key)
+	}
+}
+
 // cleanMetaFieldValue applies the same cleaning as collectSIPMetadata for a
 // given metadata key so that filter patterns match against normalised values.
 func cleanMetaFieldValue(key, raw string) string {
@@ -782,6 +795,7 @@ func (p *WSForwarderPool) ForwardAudio(ctx context.Context, _ string, reader io.
 				"filter_field":   result.Field,
 				"filter_pattern": result.Pattern,
 			}).Warn("Call rejected by allow filter; discarding audio")
+			p.removeStreamMeta(baseCallID)
 			_, _ = io.Copy(io.Discard, reader)
 			return nil
 		}
