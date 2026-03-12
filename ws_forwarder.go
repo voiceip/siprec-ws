@@ -198,6 +198,11 @@ func cleanSIPMetaValue(s string) string {
 
 // --- Per-call WebSocket connection ---
 
+const (
+	wsPingInterval = 15 * time.Second
+	wsPongTimeout  = 20 * time.Second
+)
+
 // CallConnection manages a single WebSocket connection shared by all legs of
 // one call. It is safe for concurrent use.
 type CallConnection struct {
@@ -212,6 +217,52 @@ type CallConnection struct {
 	// closed is set once to prevent double-close.
 	closeOnce sync.Once
 	logger    *logrus.Entry
+}
+
+// startReadPump drains incoming messages (and enables automatic pong replies)
+// and sends periodic pings to keep the connection alive through proxies/LBs.
+func (cc *CallConnection) startReadPump(ctx context.Context) {
+	cc.conn.SetPongHandler(func(string) error {
+		_ = cc.conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
+		return nil
+	})
+	_ = cc.conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
+
+	go func() {
+		defer cc.close()
+		for {
+			if _, _, err := cc.conn.ReadMessage(); err != nil {
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+					cc.logger.WithError(err).Debug("WebSocket read pump error")
+				}
+				return
+			}
+		}
+	}()
+
+	go func() {
+		ticker := time.NewTicker(wsPingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cc.mu.Lock()
+				if cc.conn == nil {
+					cc.mu.Unlock()
+					return
+				}
+				_ = cc.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				err := cc.conn.WriteMessage(websocket.PingMessage, nil)
+				cc.mu.Unlock()
+				if err != nil {
+					cc.logger.WithError(err).Debug("WebSocket ping failed")
+					return
+				}
+			}
+		}
+	}()
 }
 
 // writeText sends a text frame (JSON control message).
@@ -405,9 +456,10 @@ func (ai *AudioInterleaver) run(ctx context.Context) {
 
 // callState holds the WebSocket connection and interleaver for one call.
 type callState struct {
-	cc        *CallConnection
-	ai        *AudioInterleaver
-	startTime time.Time
+	cc         *CallConnection
+	ai         *AudioInterleaver
+	startTime  time.Time
+	cancelPing context.CancelFunc
 }
 
 // compiledFilter holds a pre-compiled allow filter rule.
@@ -672,7 +724,9 @@ func (p *WSForwarderPool) getOrCreateConn(baseCallID string) (*callState, error)
 			logger: p.logger.WithField("call_id", baseCallID),
 		}
 
-		state := &callState{cc: cc, ai: ai, startTime: time.Now()}
+		pumpCtx, cancelPump := context.WithCancel(context.Background())
+		state := &callState{cc: cc, ai: ai, startTime: time.Now(), cancelPing: cancelPump}
+		cc.startReadPump(pumpCtx)
 		p.conns.Store(baseCallID, state)
 
 		p.logger.WithFields(logrus.Fields{"call_id": baseCallID, "bot_url": p.botURL}).Info("WebSocket connection established to bot")
@@ -688,7 +742,12 @@ func (p *WSForwarderPool) getOrCreateConn(baseCallID string) (*callState, error)
 
 // removeConn removes a connection and its associated metadata from the pool.
 func (p *WSForwarderPool) removeConn(baseCallID string) {
-	p.conns.Delete(baseCallID)
+	if v, ok := p.conns.LoadAndDelete(baseCallID); ok {
+		state := v.(*callState)
+		if state.cancelPing != nil {
+			state.cancelPing()
+		}
+	}
 	p.removeStreamMeta(baseCallID)
 	DecBridgeActiveWSConnections()
 }
