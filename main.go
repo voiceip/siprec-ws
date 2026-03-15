@@ -131,7 +131,7 @@ func main() {
 
 	handler.SetupHandlers()
 
-	metrics.Init(logger)
+	metrics.StartMetrics(logger, true)
 	initBridgeMetrics()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
