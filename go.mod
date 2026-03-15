@@ -14,9 +14,9 @@ require (
 	siprec-server v0.0.0
 )
 
-replace siprec-server => github.com/voiceip/siprec v0.0.0-20260315114408-1f7532fcae56
+// replace siprec-server => github.com/voiceip/siprec 896a64072b845ff7ecd661feacc0390bc2f00177
 
-// replace siprec-server => ../../siprec
+replace siprec-server => ../../siprec
 
 require (
 	cloud.google.com/go v0.115.1 // indirect
