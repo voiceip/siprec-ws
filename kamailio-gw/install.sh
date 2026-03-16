@@ -21,9 +21,28 @@ echo "==> Installing Kamailio..."
 apt-get update -q
 apt-get install -y kamailio
 
+echo "==> Validating new kamailio.cfg..."
+TMP_CFG="$(mktemp /tmp/kamailio.cfg.XXXXXX)"
+cp "${SCRIPT_DIR}/kamailio.cfg" "${TMP_CFG}"
+if ! kamailio -c -f "${TMP_CFG}" 2>&1; then
+    rm -f "${TMP_CFG}"
+    echo "ERROR: kamailio config check failed – aborting deployment." >&2
+    exit 1
+fi
+rm -f "${TMP_CFG}"
+
 echo "==> Deploying kamailio.cfg..."
-cp "${SCRIPT_DIR}/kamailio.cfg" /etc/kamailio/kamailio.cfg
-chmod 644 /etc/kamailio/kamailio.cfg
+LIVE_CFG="/etc/kamailio/kamailio.cfg"
+BACKUP_CFG="${LIVE_CFG}.bak"
+if [[ -f "${LIVE_CFG}" ]]; then
+    cp "${LIVE_CFG}" "${BACKUP_CFG}"
+fi
+if ! cp "${SCRIPT_DIR}/kamailio.cfg" "${LIVE_CFG}"; then
+    [[ -f "${BACKUP_CFG}" ]] && cp "${BACKUP_CFG}" "${LIVE_CFG}"
+    echo "ERROR: failed to install config – original restored." >&2
+    exit 1
+fi
+chmod 644 "${LIVE_CFG}"
 
 echo "==> Enabling and starting Kamailio service..."
 systemctl daemon-reload
