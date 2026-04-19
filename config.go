@@ -32,26 +32,50 @@ var _ encoding.TextUnmarshaler = (*Duration)(nil)
 // Duration returns the value as time.Duration.
 func (d Duration) Duration() time.Duration { return time.Duration(d) }
 
+type RedisMode string
+
+const (
+	// RedisModeStandalone is a single Redis instance
+	RedisModeStandalone RedisMode = "standalone"
+	// RedisModeSentinel uses Redis Sentinel for HA
+	RedisModeSentinel RedisMode = "sentinel"
+	// RedisModeCluster uses Redis Cluster for HA and sharding
+	RedisModeCluster RedisMode = "cluster"
+)
+
 // Config holds all application configuration (file, env, defaults via Viper).
 type Config struct {
-	LogLevel           string           `mapstructure:"log_level"`
-	LogFormat          string           `mapstructure:"log_format"`
-	BotWSURL           string           `mapstructure:"bot_ws_url"`
-	SIPHost            string           `mapstructure:"sip_host"`
-	SIPPorts           []int            `mapstructure:"sip_ports"`
-	RTPPortMin         int              `mapstructure:"rtp_port_min"`
-	RTPPortMax         int              `mapstructure:"rtp_port_max"`
-	RTPTimeout         Duration         `mapstructure:"rtp_timeout"`
-	MaxConcurrentCalls int              `mapstructure:"max_concurrent_calls"`
-	RedisAddress       string           `mapstructure:"redis_address"`
-	RedisPassword      string           `mapstructure:"redis_password"`
-	RedisDatabase      int              `mapstructure:"redis_database"`
-	RecordingDir       string           `mapstructure:"recording_dir"`
-	ExternalIP         string           `mapstructure:"external_ip"`
-	BehindNAT          bool             `mapstructure:"behind_nat"`
-	HTTPPort           int              `mapstructure:"http_port"`
-	GCS                GCSConfig        `mapstructure:"gcs"`
-	CallAllowFilters   []CallFilterRule `mapstructure:"call_allow_filters"`
+	LogLevel           string   `mapstructure:"log_level"`
+	LogFormat          string   `mapstructure:"log_format"`
+	BotWSURL           string   `mapstructure:"bot_ws_url"`
+	SIPHost            string   `mapstructure:"sip_host"`
+	SIPPorts           []int    `mapstructure:"sip_ports"`
+	RTPPortMin         int      `mapstructure:"rtp_port_min"`
+	RTPPortMax         int      `mapstructure:"rtp_port_max"`
+	RTPTimeout         Duration `mapstructure:"rtp_timeout"`
+	MaxConcurrentCalls int      `mapstructure:"max_concurrent_calls"`
+
+	Mode RedisMode `mapstructure:"redis_mode"`
+
+	// Standalone Redis
+	RedisAddress  string `mapstructure:"redis_address"`
+	RedisPassword string `mapstructure:"redis_password"`
+	RedisDatabase int    `mapstructure:"redis_database"`
+
+	// Sentinel configuration (used when redis_mode == "sentinel")
+	SentinelAddresses  []string `mapstructure:"sentinel_addresses"`
+	SentinelMasterName string   `mapstructure:"sentinel_master_name"`
+	SentinelPassword   string   `mapstructure:"sentinel_password"`
+
+	// Cluster configuration (used when redis_mode == "cluster")
+	ClusterAddresses []string `mapstructure:"cluster_addresses"`
+
+	RecordingDir     string           `mapstructure:"recording_dir"`
+	ExternalIP       string           `mapstructure:"external_ip"`
+	BehindNAT        bool             `mapstructure:"behind_nat"`
+	HTTPPort         int              `mapstructure:"http_port"`
+	GCS              GCSConfig        `mapstructure:"gcs"`
+	CallAllowFilters []CallFilterRule `mapstructure:"call_allow_filters"`
 }
 
 // GCSConfig holds GCS recording upload settings.
@@ -139,6 +163,26 @@ func LoadConfig() (*Config, error) {
 		return nil, &configError{msg: "gcs.enabled is true but gcs.bucket is empty"}
 	}
 
+	// Normalise & validate Redis mode
+	cfg.Mode = RedisMode(strings.ToLower(strings.TrimSpace(string(cfg.Mode))))
+	switch cfg.Mode {
+	case "", RedisModeStandalone:
+		cfg.Mode = RedisModeStandalone
+	case RedisModeSentinel:
+		if len(cfg.SentinelAddresses) == 0 {
+			return nil, &configError{msg: "redis_mode is 'sentinel' but sentinel_addresses is empty"}
+		}
+		if strings.TrimSpace(cfg.SentinelMasterName) == "" {
+			return nil, &configError{msg: "redis_mode is 'sentinel' but sentinel_master_name is empty"}
+		}
+	case RedisModeCluster:
+		if len(cfg.ClusterAddresses) == 0 {
+			return nil, &configError{msg: "redis_mode is 'cluster' but cluster_addresses is empty"}
+		}
+	default:
+		return nil, &configError{msg: fmt.Sprintf("invalid redis_mode %q (expected standalone|sentinel|cluster)", cfg.Mode)}
+	}
+
 	return &cfg, nil
 }
 
@@ -173,8 +217,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("rtp_port_max", 20000)
 	v.SetDefault("rtp_timeout", "30s")
 	v.SetDefault("max_concurrent_calls", 500)
+	v.SetDefault("redis_mode", "standalone")
 	v.SetDefault("redis_address", "localhost:6379")
 	v.SetDefault("redis_database", 0)
+	v.SetDefault("sentinel_master_name", "mymaster")
 	v.SetDefault("recording_dir", "./recordings")
 	v.SetDefault("external_ip", "auto")
 	v.SetDefault("http_port", 8080)

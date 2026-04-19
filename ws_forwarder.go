@@ -311,7 +311,7 @@ func (cc *CallConnection) close() {
 
 const (
 	// 20ms at 8kHz 16-bit mono = 320 samples = 640 bytes per leg
-	pcmChunkSize   = 640
+	pcmChunkSize = 640
 	// interleaveWait: allow time for the other leg's chunk before pairing. 35ms accommodates
 	// G.729 20ms packetization plus typical network/scheduling jitter (avoids channel desync).
 	interleaveWait   = 35 * time.Millisecond

@@ -20,6 +20,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"siprec-server/pkg/backup"
+	"siprec-server/pkg/cluster"
 	"siprec-server/pkg/media"
 	"siprec-server/pkg/metrics"
 	"siprec-server/pkg/session"
@@ -90,19 +91,35 @@ func main() {
 	// Redis session store is used for recovery: the siprec handler only writes
 	// sessions to Redis during shutdown (CleanupActiveCalls). You will not see
 	// keys in Redis while calls are active; they appear when the process exits.
-	redisStore, err := session.NewRedisSessionStore(session.RedisConfig{
-		Address:      cfg.RedisAddress,
-		Password:     cfg.RedisPassword,
-		Database:     cfg.RedisDatabase,
-		PoolSize:     10,
-		DialTimeout:  5 * time.Second,
-		ReadTimeout:  3 * time.Second,
-		WriteTimeout: 3 * time.Second,
-		TTL:          24 * time.Hour,
-	}, logger)
+	//
+	// The Redis client is built via siprec's cluster.NewRedisClusterClient so
+	// standalone, sentinel (HA with automatic failover), and cluster modes are
+	// all supported. The chosen mode is driven by cfg.Mode (redis_mode).
+	redisClusterCfg := cluster.RedisClusterConfig{
+		Mode:               cluster.RedisMode(cfg.Mode),
+		Address:            cfg.RedisAddress,
+		Password:           cfg.RedisPassword,
+		Database:           cfg.RedisDatabase,
+		SentinelAddresses:  cfg.SentinelAddresses,
+		SentinelMasterName: cfg.SentinelMasterName,
+		SentinelPassword:   cfg.SentinelPassword,
+		ClusterAddresses:   cfg.ClusterAddresses,
+		PoolSize:           10,
+		DialTimeout:        5 * time.Second,
+		ReadTimeout:        3 * time.Second,
+		WriteTimeout:       3 * time.Second,
+	}
+
+	var redisStore *session.RedisSessionStore
+	clusterClient, err := cluster.NewRedisClusterClient(redisClusterCfg, logger)
 	if err != nil {
-		logger.WithError(err).Warn("Redis session store unavailable; sessions will not be persisted (in-memory only)")
-		redisStore = nil
+		logger.WithError(err).Warn("Redis unavailable; sessions will not be persisted (in-memory only)")
+	} else {
+		redisStore, err = session.NewRedisSessionStoreFromClient(clusterClient.Client(), 24*time.Hour, logger)
+		if err != nil {
+			logger.WithError(err).Warn("Redis session store init failed; sessions will not be persisted")
+			redisStore = nil
+		}
 	}
 
 	sipConfig := &sip.Config{
