@@ -115,7 +115,7 @@ func main() {
 	if err != nil {
 		logger.WithError(err).Warn("Redis unavailable; sessions will not be persisted (in-memory only)")
 	} else {
-		redisStore, err = session.NewRedisSessionStoreFromClient(clusterClient.Client(), 24*time.Hour, logger)
+		redisStore, err = NewRedisSessionStoreFromClient(clusterClient.Client(), 24*time.Hour, logger)
 		if err != nil {
 			logger.WithError(err).Warn("Redis session store init failed; sessions will not be persisted")
 			redisStore = nil
@@ -206,3 +206,31 @@ func main() {
 
 // Compile-time check that net.Listener is available (used by SIP server).
 var _ net.Listener
+
+// NewRedisSessionStoreFromClient wraps an already-constructed Redis client
+// (e.g. from cluster.NewRedisClusterClient for sentinel/cluster support)
+// into a RedisSessionStore. A ping is performed to verify connectivity.
+func NewRedisSessionStoreFromClient(client redis.UniversalClient, ttl time.Duration, logger *logrus.Logger) (*session.RedisSessionStore, error) {
+	if client == nil {
+		return nil, fmt.Errorf("redis client is nil")
+	}
+	if ttl <= 0 {
+		ttl = 24 * time.Hour
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Ping(ctx).Err(); err != nil {
+		return nil, fmt.Errorf("failed to ping Redis: %w", err)
+	}
+
+	store := &RedisSessionStore{
+		client:    client,
+		logger:    logger,
+		keyPrefix: "siprec:session:",
+		ttl:       ttl,
+	}
+
+	logger.WithField("ttl", ttl).Info("Redis session store initialized from existing client")
+	return store, nil
+}
